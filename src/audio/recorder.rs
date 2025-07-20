@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::sync::Arc;
 
 use crate::audio::audio_ring_buffer::AudioRingBuffer;
@@ -75,10 +76,22 @@ impl<T: RecorderSample> SampleSink for ArcChannelSink<T> {
     type Sample = T;
 
     fn push(&mut self, data: &[Self::Sample]) {
-        // The only way for this to fail is if there's no receiver to receive the audio.
-        // This means that transcription has stopped for whatever reason, so this device is due to
-        // be dropped.
-        let _ = self.0.try_send(Arc::from(data));
+        if let Err(e) = self.0.try_send(Arc::from(data)) {
+            #[cfg(feature = "ribble-logging")]
+            {
+                log::warn!(
+                    "Failed to send audio data over recorder channel, {:#?}",
+                    e.source()
+                );
+            }
+            #[cfg(not(feature = "ribble-logging"))]
+            {
+                eprintln!(
+                    "Failed to send audio data over recorder channel, {:#?}",
+                    e.source()
+                );
+            }
+        }
     }
 }
 
@@ -88,6 +101,21 @@ impl<T: RecorderSample> SampleSink for VecChannelSink<T> {
         // The only way for this to fail is if there's no receiver to receive the audio.
         // This means that transcription has stopped for whatever reason, so this device is due to
         // be dropped.
-        let _ = self.0.try_send(data.to_vec());
+        if let Err(e) = self.0.try_send(data.to_vec()) {
+            #[cfg(feature = "ribble-logging")]
+            {
+                log::warn!(
+                    "Failed to send audio data over recorder channel, {:#?}",
+                    e.source()
+                );
+            }
+            #[cfg(not(feature = "ribble-logging"))]
+            {
+                eprintln!(
+                    "Failed to send audio data over recorder channel, {:#?}",
+                    e.source()
+                );
+            }
+        };
     }
 }

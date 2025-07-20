@@ -1,6 +1,5 @@
 use thiserror::Error;
 
-// TODO: implement a DeviceCompatibilityError
 #[derive(Debug, Error)]
 pub enum RibbleWhisperError {
     /// Called on a data-channel failure

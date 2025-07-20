@@ -1,6 +1,6 @@
 [package]
 name = "ribble_whisper"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "High-level wrapper around whisper-rs features with support for realtime transcription; designed for use in GUI and TUI applications."
 readme = "README.md"
@@ -21,7 +21,7 @@ serde_json = { version = "1.0.140", optional = true }
 rubato = { version = "0.16.2", optional = true }
 whisper-rs = { version = "0.14.3", features = ["log_backend", "tracing_backend"] }
 whisper-rs-sys = "0.13.0"
-sdl2 = { version = "0.37.0", optional = true }
+sdl2 = { version = "0.38.0", optional = true }
 reqwest = { version = "0.12.5", features = ["blocking", "stream"], optional = true }
 futures = { version = "0.3.30", optional = true }
 futures-util = { version = "0.3.30", optional = true }
@@ -45,11 +45,12 @@ earshot = "0.1.0"
 webrtc-vad = "0.4.0"
 parking_lot = { version = "0.12.4", features = ["deadlock_detection"] }
 strsim = "0.11.1"
-sanitize-filename = {version = "0.6.0", optional = true}
+sanitize-filename = { version = "0.6.0", optional = true }
+log = { version = "0.4.27", optional = true }
 
 [dev-dependencies]
 criterion = "0.6.0"
-indicatif = "0.17.8"
+indicatif = "0.18.0"
 hound = "3.5.1"
 ctrlc = "3.4.4"
 
@@ -62,6 +63,7 @@ ar = "C:\\msys64\\ucrt64\\bin\\ar.exe"
 
 [features]
 default = ["sdl2"]
+ribble-logging = ["dep:log"]
 sdl2 = ["dep:sdl2"]
 sdl2-static = ["sdl2", "sdl2/static-link", "sdl2/bundled"]
 all = ["downloader-async", "resampler", "integrity", "crossbeam", "serde"]
@@ -79,8 +81,8 @@ hipblas = ["whisper-rs/hipblas", "_gpu"]
 coreml = ["whisper-rs/coreml", "whisper-rs/metal", "_gpu"]
 metal = ["whisper-rs/metal", "_gpu"]
 vulkan = ["whisper-rs/vulkan", "_gpu"]
-log_backend = ["whisper-rs/log_backend"]
-tracing_backend = ["whisper-rs/tracing_backend"]
+log_backend = ["whisper-rs/log_backend", "ribble-logging"]
+tracing_backend = ["whisper-rs/tracing_backend", "ribble-logging"]
 # symphonia passthrough features:
 symphonia-all = ["symphonia/all-codecs", "symphonia/all-formats"]
 symphonia-mpeg = ["symphonia/mpa"]

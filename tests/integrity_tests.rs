@@ -143,7 +143,8 @@ mod model_integrity_tests {
     }
     #[test]
     fn test_integrity_check_downloaded() {
-        let model_type = DefaultModelType::default();
+        // NOTE: THIS TEST WILL FAIL IF THE MODEL ISN'T DOWNLOADED
+        let model_type = DefaultModelType::Small;
         let (mut model_bank, model_id) = prep_model_bank(model_type);
 
         let exists = model_bank.model_exists_in_storage(model_id);

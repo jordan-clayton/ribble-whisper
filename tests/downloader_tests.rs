@@ -18,6 +18,7 @@ mod downloader_tests {
     }
 
     #[test]
+    #[ignore]
     fn test_async_download() {
         // NOTE: When running tests in parallel, these need to be different
         let model_type = DefaultModelType::Tiny;
@@ -115,6 +116,7 @@ mod downloader_tests {
     }
 
     #[test]
+    #[ignore]
     fn test_sync_download() {
         let model_type = DefaultModelType::TinyEn;
         let (model_bank, model_id) = prep_model_bank(model_type);

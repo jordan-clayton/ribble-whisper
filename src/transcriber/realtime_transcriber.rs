@@ -240,8 +240,14 @@ where
         if let Err(e) = self.output_sender.try_send(WhisperOutput::ControlPhrase(
             WhisperControlPhrase::GettingReady,
         )) {
-            // TODO: proper logging.
-            eprintln!("Error sending snapshot: {:?}", e.source())
+            #[cfg(feature = "ribble-logging")]
+            {
+                log::warn!("Error sending getting-ready snapshot: {:#?}", e.source());
+            }
+            #[cfg(not(feature = "ribble-logging"))]
+            {
+                eprintln!("Error sending getting-ready snapshot: {:#?}", e.source())
+            }
         }
 
         let mut t_last = Instant::now();
@@ -277,8 +283,14 @@ where
         if let Err(e) = self.output_sender.send(WhisperOutput::ControlPhrase(
             WhisperControlPhrase::StartSpeaking,
         )) {
-            // TODO: proper logging.
-            eprintln!("Error sending snapshot: {:?}", e.source())
+            #[cfg(feature = "ribble-logging")]
+            {
+                log::warn!("Error sending start-speaking snapshot: {:#?}", e.source())
+            }
+            #[cfg(not(feature = "ribble-logging"))]
+            {
+                eprintln!("Error sending start-speaking snapshot: {:#?}", e.source())
+            }
         }
         while run_transcription.load(Ordering::Acquire) {
             let t_now = Instant::now();
@@ -314,9 +326,18 @@ where
             let voice_detected = self.vad.lock().voice_detected(&audio_samples);
             if !voice_detected {
                 // DEBUGGING.
-                let _ = self.output_sender.try_send(WhisperOutput::ControlPhrase(
+                if let Err(e) = self.output_sender.try_send(WhisperOutput::ControlPhrase(
                     WhisperControlPhrase::Debug("PAUSE DETECTED".to_string()),
-                ));
+                )) {
+                    #[cfg(feature = "ribble-logging")]
+                    {
+                        eprintln!("Error sending pause debug phrase: {:#?}", e.source())
+                    }
+                    #[cfg(not(feature = "ribble-logging"))]
+                    {
+                        eprintln!("Error sending debug phrase: {:#?}", e.source())
+                    }
+                };
 
                 // Drain the dequeue and push to the confirmed output_string
                 let next_output = working_set.drain(..).map(|output| output.text);
@@ -335,10 +356,19 @@ where
                 continue;
             }
 
-            // DEBUGGING.
-            let _ = self.output_sender.try_send(WhisperOutput::ControlPhrase(
+            // DEBUGGING -> just ignore these in the print loop if undesired.
+            if let Err(e) = self.output_sender.try_send(WhisperOutput::ControlPhrase(
                 WhisperControlPhrase::Debug("RUNNING INFERENCE".to_string()),
-            ));
+            )) {
+                #[cfg(feature = "ribble-logging")]
+                {
+                    log::warn!("Error sending inference debug phrase: {:#?}", e.source());
+                }
+                #[cfg(not(feature = "ribble-logging"))]
+                {
+                    eprintln!("Error sending inference debug phrase: {:#?}", e.source());
+                }
+            };
 
             // Update the time (for timeout)
             t_last = t_now;
@@ -437,7 +467,7 @@ where
                             }
                         } else {
                             // Otherwise, if it's outside the timestamp gap, only match on likely probability
-                            // High matches indicate close segments (ie. a word/phrase boundary)
+                            // High matches indicate close segments (i.e. a word/phrase boundary)
                             if similar >= DIFF_THRESHOLD_HIGH {
                                 true
                             } else if similar >= DIFF_THRESHOLD_MED {
@@ -510,8 +540,20 @@ where
                     .output_sender
                     .try_send(WhisperOutput::TranscriptionSnapshot(snapshot))
                 {
-                    // TODO: proper logging.
-                    eprintln!("Error sending snapshot: {:?}", e.source())
+                    #[cfg(feature = "ribble-logging")]
+                    {
+                        log::warn!(
+                            "Error sending transcription-snapshot mid loop: {:#?}",
+                            e.source()
+                        )
+                    }
+                    #[cfg(not(feature = "ribble-logging"))]
+                    {
+                        eprintln!(
+                            "Error sending transcription-snapshot mid loop: {:#?}",
+                            e.source()
+                        )
+                    }
                 }
             }
 
@@ -525,8 +567,17 @@ where
                 if let Err(e) = self.output_sender.try_send(WhisperOutput::ControlPhrase(
                     WhisperControlPhrase::TranscriptionTimeout,
                 )) {
-                    // TODO: proper logging.
-                    eprintln!("Error sending snapshot: {:?}", e.source())
+                    #[cfg(feature = "ribble-logging")]
+                    {
+                        log::warn!("Error sending timeout control phrase: {:#?}", e.source())
+                    }
+                    #[cfg(not(feature = "ribble-logging"))]
+                    {
+                        eprintln!(
+                            "Error sending end-of-transcription control phrase: {:#?}",
+                            e.source()
+                        )
+                    }
                 }
 
                 run_transcription.store(false, Ordering::Release);
@@ -536,8 +587,20 @@ where
         if let Err(e) = self.output_sender.send(WhisperOutput::ControlPhrase(
             WhisperControlPhrase::EndTranscription,
         )) {
-            // TODO: proper logging.
-            eprintln!("Error sending snapshot: {:?}", e.source())
+            #[cfg(feature = "ribble-logging")]
+            {
+                log::warn!(
+                    "Error sending end-of-transcription control phrase: {:#?}",
+                    e.source()
+                )
+            }
+            #[cfg(not(feature = "ribble-logging"))]
+            {
+                eprintln!(
+                    "Error sending end-of-transcription control phrase: {:#?}",
+                    e.source()
+                )
+            }
         }
 
         // Clean up the whisper context

@@ -1,7 +1,7 @@
 use parking_lot::Mutex;
-use std::ffi::{CStr, c_int, c_void};
-use std::sync::Arc;
+use std::ffi::{c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use whisper_rs::{WhisperNewSegmentCallback, WhisperProgressCallback};
 
@@ -200,7 +200,6 @@ where
     V: VAD<f32>,
     M: ModelRetriever,
 {
-    //  TODO: I don't actually think this needs to borrow self mutably anymore
     fn run_transcription(
         &self,
         full_params: whisper_rs::FullParams,
@@ -279,7 +278,6 @@ impl<V: VAD<f32>, M: ModelRetriever> Transcriber for OfflineTranscriber<V, M> {
     // NOTE: this uses the unsafe API for whisper callbacks to have a little more control over the FFI.
     // Expect this implementation to be safe, for all intents and purposes.
     fn process_audio(
-        // TODO: I don't this needs a mut ref.
         &self,
         run_transcription: Arc<AtomicBool>,
     ) -> Result<String, RibbleWhisperError> {
@@ -320,7 +318,6 @@ where
     // then just take the performance hit and box the trait objects.
     // As of testing thus far, this implementation is safe.
     fn process_with_callbacks(
-        // TODO: I don't think mut is required here.
         &self,
         run_transcription: Arc<AtomicBool>,
         callbacks: WhisperCallbacks<P, S>,

@@ -8,8 +8,8 @@ use whisper_rs::{WhisperNewSegmentCallback, WhisperProgressCallback};
 use crate::audio::{AudioChannelConfiguration, WhisperAudioSample};
 use crate::transcriber::vad::VAD;
 use crate::transcriber::{
-    CallbackTranscriber, OfflineWhisperNewSegmentCallback, OfflineWhisperProgressCallback,
-    Transcriber, TranscriptionSnapshot, WhisperCallbacks,
+    build_whisper_context, CallbackTranscriber, OfflineWhisperNewSegmentCallback,
+    OfflineWhisperProgressCallback, Transcriber, TranscriptionSnapshot, WhisperCallbacks,
 };
 use crate::utils::errors::RibbleWhisperError;
 use crate::whisper::configs::WhisperConfigsV2;
@@ -210,15 +210,12 @@ where
         // safely unwrapped.
         let model_id = self.configs.model_id().unwrap();
 
-        let model_path = self.model_retriever.retrieve_model_path(model_id).ok_or(
+        let model_location = self.model_retriever.retrieve_model(model_id).ok_or(
             RibbleWhisperError::ParameterError(format!("Failed to find model: {model_id}")),
         )?;
 
         // Set up a whisper context
-        let ctx = whisper_rs::WhisperContext::new_with_params(
-            &model_path.to_string_lossy(),
-            whisper_context_params,
-        )?;
+        let ctx = build_whisper_context(model_location, whisper_context_params)?;
 
         let mut whisper_state = ctx.create_state()?;
 

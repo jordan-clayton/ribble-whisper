@@ -11,7 +11,9 @@ mod downloader_tests {
     use ribble_whisper::downloader::SyncDownload;
     use ribble_whisper::utils::callback::{RibbleAbortCallback, RibbleWhisperCallback};
     use ribble_whisper::utils::errors::RibbleWhisperError;
-    use ribble_whisper::whisper::model::{DefaultModelType, ModelBank, ModelRetriever};
+    use ribble_whisper::whisper::model::{
+        DefaultModelType, ModelBank, ModelLocation, ModelRetriever,
+    };
 
     fn delete_model(file_path: &std::path::Path) -> std::io::Result<()> {
         std::fs::remove_file(file_path)
@@ -30,9 +32,15 @@ mod downloader_tests {
         );
 
         if exists.unwrap() {
-            let file_path = model_bank.retrieve_model_path(model_id);
-            assert!(file_path.is_some(), "Model bank not returning file path.");
-            let file_path = file_path.unwrap();
+            let file_location = model_bank.retrieve_model(model_id);
+            assert!(
+                file_location.is_some(),
+                "Model bank not returning file path."
+            );
+            let file_path = match file_location.unwrap() {
+                ModelLocation::DynamicFilePath(path) => path,
+                _ => unreachable!("Default model bank only uses DynamicFilePath"),
+            };
             let deleted = delete_model(file_path.as_path());
             assert!(
                 deleted.is_ok(),
@@ -128,9 +136,16 @@ mod downloader_tests {
         );
 
         if exists.unwrap() {
-            let file_path = model_bank.retrieve_model_path(model_id);
-            assert!(file_path.is_some(), "Model bank not returning file path.");
-            let file_path = file_path.unwrap();
+            let file_location = model_bank.retrieve_model(model_id);
+            assert!(
+                file_location.is_some(),
+                "Model bank not returning file path."
+            );
+            let file_path = match file_location.unwrap() {
+                ModelLocation::DynamicFilePath(path) => path,
+                _ => unreachable!("Default model bank only uses DynamicFilePath"),
+            };
+
             let deleted = delete_model(file_path.as_path());
             assert!(
                 deleted.is_ok(),

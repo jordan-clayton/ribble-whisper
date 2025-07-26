@@ -14,7 +14,9 @@ mod model_integrity_tests {
 
     use crate::common::prep_model_bank;
     use ribble_whisper::whisper::integrity_utils::CHECKSUM_RE;
-    use ribble_whisper::whisper::model::{Checksum, DefaultModelType, ModelBank, ModelRetriever};
+    use ribble_whisper::whisper::model::{
+        Checksum, DefaultModelType, ModelBank, ModelLocation, ModelRetriever,
+    };
 
     fn delete_model(file_path: &std::path::Path) -> std::io::Result<()> {
         std::fs::remove_file(file_path)
@@ -105,13 +107,17 @@ mod model_integrity_tests {
         );
 
         if exists.unwrap() {
-            let file_path = model_bank.retrieve_model_path(model_id);
+            let file_location = model_bank.retrieve_model(model_id);
             assert!(
-                file_path.is_some(),
-                "Failed to retrieve model path from default model bank."
+                file_location.is_some(),
+                "Model bank not returning file path."
             );
+            let file_path = match file_location.unwrap() {
+                ModelLocation::DynamicFilePath(path) => path,
+                _ => unreachable!("Default model bank only uses DynamicFilePath"),
+            };
 
-            let deleted = delete_model(file_path.unwrap().as_path());
+            let deleted = delete_model(file_path.as_path());
             assert!(
                 deleted.is_ok(),
                 "Failed to delete model: {}",

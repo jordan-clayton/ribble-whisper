@@ -50,6 +50,8 @@ impl<T: RecorderSample> RingBufSink<T> {
 }
 /// Pushes audio out using a message queue to fan out data as `Arc<[T]>`
 /// Significantly faster for audio fanout than `Vec<T>`; prefer when possible.
+/// NOTE: Due to synchronization difficulties, pushing can result in logging false positives if the sink is still
+/// in scope and has not yet been paused. This is most likely to occur when transcription finishes.
 pub struct ArcChannelSink<T>(Sender<Arc<[T]>>);
 impl<T: RecorderSample> ArcChannelSink<T> {
     pub fn new(sender: Sender<Arc<[T]>>) -> Self {
@@ -58,6 +60,8 @@ impl<T: RecorderSample> ArcChannelSink<T> {
 }
 /// Pushes audio out using a message queue to fan out data as `Vec<T>`
 /// Use only if vectors are required in further processing, otherwise prefer the ArcChannelSink.
+/// NOTE: Due to synchronization difficulties, pushing can result in logging false positives if the sink is still
+/// in scope and has not yet been paused. This is most likely to occur when transcription finishes.
 pub struct VecChannelSink<T>(Sender<Vec<T>>);
 impl<T: RecorderSample> VecChannelSink<T> {
     pub fn new(sender: Sender<Vec<T>>) -> Self {
@@ -74,20 +78,27 @@ impl<T: RecorderSample> SampleSink for RingBufSink<T> {
 
 impl<T: RecorderSample> SampleSink for ArcChannelSink<T> {
     type Sample = T;
-
+    /// NOTE: Due to synchronization difficulties, this can log false positives if the sink is still
+    /// in scope and has not yet been paused. This is most likely to occur when transcription finishes.
     fn push(&mut self, data: &[Self::Sample]) {
         if let Err(e) = self.0.try_send(Arc::from(data)) {
             #[cfg(feature = "ribble-logging")]
             {
                 log::warn!(
-                    "Failed to send audio data over recorder channel, {:#?}",
+                    "Failed to send audio data over recorder channel.\n\
+                    Error: {}\n\
+                    Error source:{:#?}",
+                    &e,
                     e.source()
                 );
             }
             #[cfg(not(feature = "ribble-logging"))]
             {
                 eprintln!(
-                    "Failed to send audio data over recorder channel, {:#?}",
+                    "Failed to send audio data over recorder channel.\n\
+                    Error: {}\n\
+                    Error source:{:#?}",
+                    &e,
                     e.source()
                 );
             }
@@ -98,21 +109,24 @@ impl<T: RecorderSample> SampleSink for ArcChannelSink<T> {
 impl<T: RecorderSample> SampleSink for VecChannelSink<T> {
     type Sample = T;
     fn push(&mut self, data: &[Self::Sample]) {
-        // The only way for this to fail is if there's no receiver to receive the audio.
-        // This means that transcription has stopped for whatever reason, so this device is due to
-        // be dropped.
         if let Err(e) = self.0.try_send(data.to_vec()) {
             #[cfg(feature = "ribble-logging")]
             {
                 log::warn!(
-                    "Failed to send audio data over recorder channel, {:#?}",
+                    "Failed to send audio data over recorder channel.\n\
+                    Error: {}\n\
+                    Error source:{:#?}",
+                    &e,
                     e.source()
                 );
             }
             #[cfg(not(feature = "ribble-logging"))]
             {
                 eprintln!(
-                    "Failed to send audio data over recorder channel, {:#?}",
+                    "Failed to send audio data over recorder channel.\n\
+                    Error: {}\n\
+                    Error source:{:#?}",
+                    &e,
                     e.source()
                 );
             }

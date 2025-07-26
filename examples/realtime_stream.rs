@@ -182,7 +182,7 @@ fn main() {
                 stdout().flush().expect("Stdout should clear normally.");
             }
 
-            println!("Print thread completed.");
+            println!("\nPrint thread completed.");
             // Take the last received snapshot and join it into a string.
             // This is just to demonstrate that the sending mechanism terminates to the same
             // state as the final transcription string.

@@ -6,6 +6,7 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::utils::callback::{Callback, ShortCircuitCallback};
 use crate::utils::errors::RibbleWhisperError;
+use crate::whisper::model::ModelLocation;
 
 pub mod offline_transcriber;
 pub mod realtime_transcriber;
@@ -172,3 +173,24 @@ pub enum WhisperControlPhrase {
 }
 
 pub const WHISPER_SAMPLE_RATE: f64 = 16000f64;
+
+// Quick and dirty utility function for both transcriber objects.
+fn build_whisper_context(
+    model_location: ModelLocation,
+    params: whisper_rs::WhisperContextParameters,
+) -> Result<whisper_rs::WhisperContext, RibbleWhisperError> {
+    Ok(match model_location {
+        ModelLocation::StaticFilePath(path) => {
+            whisper_rs::WhisperContext::new_with_params(&path.to_string_lossy(), params)
+        }
+        ModelLocation::DynamicFilePath(path_buf) => {
+            whisper_rs::WhisperContext::new_with_params(&path_buf.to_string_lossy(), params)
+        }
+        ModelLocation::StaticBuffer(buf) => {
+            whisper_rs::WhisperContext::new_from_buffer_with_params(buf, params)
+        }
+        ModelLocation::DynamicBuffer(buf) => {
+            whisper_rs::WhisperContext::new_from_buffer_with_params(&buf, params)
+        }
+    }?)
+}

@@ -1,5 +1,5 @@
 use ribble_whisper::whisper::model::{
-    DefaultModelBank, DefaultModelType, ModelBank, ModelId, ModelRetriever,
+    DefaultModelBank, DefaultModelType, ModelBank, ModelId, ModelLocation, ModelRetriever,
 };
 
 // NOTE: this is not actually dead code. It's just a bit tricky to share common functions across
@@ -20,13 +20,17 @@ pub(crate) fn prep_model_bank(model_type: DefaultModelType) -> (DefaultModelBank
 
     let model = model.unwrap();
     let manual_join = bank.model_directory().join(model.file_name());
-    let retrieve_join = bank.retrieve_model_path(model_id);
+    let retrieve_join = bank.retrieve_model(model_id);
     assert!(
         retrieve_join.is_some(),
         "{} Model is not in bank.",
         model_type
     );
-    let retrieve_join = retrieve_join.unwrap();
+    let retrieve_join = match retrieve_join.unwrap() {
+        ModelLocation::DynamicFilePath(path) => path,
+        _ => unreachable!("DefaultModelBank only returns DynamicFilePath."),
+    };
+
     assert_eq!(
         manual_join, retrieve_join,
         "Path error. Manual: {:?}, Retrieved: {:?}",

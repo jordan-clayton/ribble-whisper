@@ -1,8 +1,8 @@
 use crate::utils::errors::RibbleWhisperError;
 #[cfg(feature = "integrity")]
 use crate::whisper::integrity_utils::{
-    ChecksumStatus, checksums_need_updating, get_model_checksum, get_new_checksums,
-    serialize_new_checksums, write_latest_repo_checksum_to_disk,
+    checksums_need_updating, get_model_checksum, get_new_checksums, serialize_new_checksums,
+    write_latest_repo_checksum_to_disk, ChecksumStatus,
 };
 #[cfg(feature = "integrity")]
 use reqwest::blocking;
@@ -10,7 +10,7 @@ use reqwest::blocking;
 use sha1::Sha1;
 #[cfg(feature = "integrity")]
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, hash_map};
+use std::collections::{hash_map, HashMap};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -148,12 +148,19 @@ pub trait ConcurrentModelBank: Send + Sync {
     fn refresh_model_bank(&self) -> Result<(), RibbleWhisperError>;
 }
 
-/// A simple trait that allows Transcriber objects to retrieve model paths from storage.
-pub trait ModelRetriever {
-    fn retrieve_model_path(&self, model_id: ModelId) -> Option<PathBuf>;
+pub enum ModelLocation {
+    StaticFilePath(&'static Path),
+    DynamicFilePath(PathBuf),
+    StaticBuffer(&'static [u8]),
+    DynamicBuffer(Vec<u8>),
 }
 
-/// A default [ModelBank] implementation that stores information for for a small subset of [DefaultModelType] members.
+/// A simple trait that allows Transcriber objects to retrieve models from storage.
+pub trait ModelRetriever {
+    fn retrieve_model(&self, model_id: ModelId) -> Option<ModelLocation>;
+}
+
+/// A default [ModelBank] implementation that stores information for a small subset of [DefaultModelType] members.
 pub struct DefaultModelBank {
     model_directory: PathBuf,
     models: HashMap<ModelId, Model>,
@@ -309,10 +316,10 @@ impl ModelBank for DefaultModelBank {
 }
 
 impl ModelRetriever for DefaultModelBank {
-    fn retrieve_model_path(&self, model_id: ModelId) -> Option<PathBuf> {
-        self.models
-            .get(&model_id)
-            .map(|model| self.model_directory.join(model.file_name()))
+    fn retrieve_model(&self, model_id: ModelId) -> Option<ModelLocation> {
+        self.models.get(&model_id).map(|model| {
+            ModelLocation::DynamicFilePath(self.model_directory.join(model.file_name()))
+        })
     }
 }
 

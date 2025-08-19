@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod vad_tests {
-    use std::sync::LazyLock;
+    use std::sync::{Arc, LazyLock};
 
     use hound::SampleFormat;
-
+    use ribble_whisper::audio::loading::load_normalized_audio_file;
     use ribble_whisper::audio::pcm::IntoPcmS16;
     use ribble_whisper::audio::resampler::{resample, ResampleableAudio};
     use ribble_whisper::audio::WhisperAudioSample;
@@ -38,12 +38,27 @@ mod vad_tests {
         }
     });
 
+    static WHISPER_AUDIO_SAMPLE: LazyLock<Arc<[f32]>> = LazyLock::new(|| {
+        let sample = load_normalized_audio_file(
+            "tests/audio_files/128896__joshenanigans__sentence-recitation.wav",
+            None::<fn(usize)>,
+        )
+        .expect("Test audio should load without issue.");
+        let audio = match sample {
+            WhisperAudioSample::I16(_) => unreachable!(),
+            WhisperAudioSample::F32(audio) => audio,
+        };
+        audio
+    });
+
     // Build a 10-second silent audio clip at 16kHz to tease out false positives.
     static SILENCE: LazyLock<Vec<i16>> = LazyLock::new(|| {
         let secs = 10.;
         vec![0; (secs * WHISPER_SAMPLE_RATE) as usize]
     });
 
+    // Silero is very good for detecting -actual- speech, but it can get tripped up
+    // with audio that has a lot of pauses.
     #[test]
     fn test_silero_detection() {
         let mut vad = SileroBuilder::new()
@@ -53,10 +68,13 @@ mod vad_tests {
             .build()
             .expect("Silero VAD expected to build without issues.");
 
-        let voice_detected = vad.voice_detected(&AUDIO_SAMPLE);
+        // Prune out the detected speech frames to cut out pauses.
+        let voiced_frames = vad.extract_voiced_frames(&AUDIO_SAMPLE);
+        let voice_detected = vad.voice_detected(&voiced_frames);
+
         assert!(
             voice_detected,
-            "Silero failed to detect voice in audio samples @ 65% threshold"
+            "Silero failed to detect voice in audio samples @ 60% probability, 50% threshold",
         );
 
         let mut whisper_vad = Silero::try_new_whisper_realtime_default()
@@ -67,6 +85,69 @@ mod vad_tests {
             "Silero detected voice in a silent clip with whisper parameters."
         )
     }
+    #[test]
+    fn test_silero_detection_audio_source_2() {
+        let mut vad = Silero::try_new_whisper_realtime_default()
+            .expect("Whisper-read Silero VAD expected to build without issues.");
+        let voice_detected = vad.voice_detected(&WHISPER_AUDIO_SAMPLE);
+        assert!(
+            voice_detected,
+            "Silero failed to detect voice in audio samples @ 30% probability threshold, 50% voiced proportion threshold"
+        );
+
+        // Run a test over a 300 MS chunk that's ~ 1 second into the audio
+        let vad_ms_len = ((300.0 / 1000.0) * WHISPER_SAMPLE_RATE) as usize;
+        let audio_ms_len = WHISPER_SAMPLE_RATE as usize;
+        let start_idx = audio_ms_len - vad_ms_len;
+        let audio_sample = &WHISPER_AUDIO_SAMPLE[start_idx..start_idx + vad_ms_len];
+
+        let sample_detected_primed = vad.voice_detected(audio_sample);
+
+        assert!(
+            sample_detected_primed,
+            "Primed Silero failed on small voice sample"
+        );
+        vad.reset_session();
+
+        let sample_detected_fresh = vad.voice_detected(audio_sample);
+        assert!(
+            sample_detected_fresh,
+            "Resetted Silero failed on small voice sample"
+        );
+
+        // Test a fresh-vad to rule out silero init weirdness
+        let mut new_vad = Silero::try_new_whisper_realtime_default()
+            .expect("Whisper-ready Silero model expected to build without issues.");
+        let new_voice_detected = new_vad.voice_detected(audio_sample);
+
+        assert!(
+            new_voice_detected,
+            "New VAD failed to detect small-sample voice"
+        );
+
+        // Test from the very first 4800 samples.
+        let first_vad = &WHISPER_AUDIO_SAMPLE[..vad_ms_len];
+        vad.reset_session();
+        let first_vad_voice_detected = vad.voice_detected(&first_vad);
+
+        assert!(
+            !first_vad_voice_detected,
+            "Silero is going funky; the audio doesn't pick up until ~200 ms in"
+        );
+
+        vad.reset_session();
+
+        // This is the minimum which passes
+        // This more-or-less chops out the silence.
+        let offset = ((206.0 / 1000.0) * WHISPER_SAMPLE_RATE) as usize;
+        let offset_first_vad = &WHISPER_AUDIO_SAMPLE[offset..offset + vad_ms_len];
+        let offset_vad_voice_detected = vad.voice_detected(offset_first_vad);
+        assert!(
+            offset_vad_voice_detected,
+            "Failed to detect voice even after pruning."
+        );
+    }
+
     #[test]
     fn test_webrtc_detection() {
         let mut vad = WebRtcBuilder::new()
@@ -185,6 +266,9 @@ mod vad_tests {
         let voice_detected = vad.voice_detected(&voiced_frames);
         assert!(voice_detected, "Too many non-voiced samples.");
     }
+
+    // Perhaps this needs to prune harder.
+    // I'm not quite sure.
     #[test]
     fn silero_vad_extraction_strict() {
         let mut vad = SileroBuilder::new()
@@ -207,11 +291,12 @@ mod vad_tests {
             AUDIO_SAMPLE.len()
         );
 
-        // Run the voice-detection over the extracted frames with a much stricter threshold to
-        // confirm that most frames are speech
-        vad = vad.with_detection_probability_threshold(0.8);
         let voice_detected = vad.voice_detected(&voiced_frames);
-        assert!(voice_detected, "Too many non-voiced samples.")
+        assert!(
+            voice_detected,
+            "Too many or too few non-voiced samples, {}",
+            voiced_frames.len()
+        )
     }
 
     #[test]

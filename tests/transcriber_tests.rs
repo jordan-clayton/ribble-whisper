@@ -12,15 +12,15 @@ mod transcriber_tests {
     use ribble_whisper::audio::{audio_backend, AudioChannelConfiguration, WhisperAudioSample};
     use ribble_whisper::transcriber::offline_transcriber::OfflineTranscriberBuilder;
     use ribble_whisper::transcriber::realtime_transcriber::RealtimeTranscriberBuilder;
-    use ribble_whisper::transcriber::vad::{Silero, VAD};
+    use ribble_whisper::transcriber::vad::Silero;
     use ribble_whisper::transcriber::{
-        redirect_whisper_logging_to_hooks, CallbackTranscriber, Transcriber, WhisperCallbacks,
-        WhisperOutput,
+        redirect_whisper_logging_to_hooks, CallbackTranscriber, Transcriber, WhisperCallbacks, WhisperOutput,
+        WHISPER_SAMPLE_RATE,
     };
+    use ribble_whisper::utils;
     use ribble_whisper::utils::callback::{Nop, RibbleWhisperCallback};
     use ribble_whisper::whisper::configs::{WhisperConfigsV2, WhisperRealtimeConfigs};
     use ribble_whisper::whisper::model::{DefaultModelBank, DefaultModelType};
-    use ribble_whisper::{transcriber, utils};
 
     // Prepare an audio sample with a known output to try and make conditions as replicable as
     // possible
@@ -30,18 +30,10 @@ mod transcriber_tests {
             None::<fn(usize)>,
         )
         .expect("Test audio should load without issue.");
-        let audio = match sample {
+        match sample {
             WhisperAudioSample::I16(_) => unreachable!(),
             WhisperAudioSample::F32(audio) => audio,
-        };
-
-        // Extract only the voiced frames to try and prevent accidental early silence.
-        // Use Silero for accuracy
-        let mut vad =
-            Silero::try_new_whisper_offline_default().expect("Silero should build without issues");
-        let out = vad.extract_voiced_frames(&audio);
-        assert!(!out.is_empty());
-        Arc::from(out)
+        }
     });
 
     #[test]
@@ -57,19 +49,8 @@ mod transcriber_tests {
             .set_flash_attention(true);
 
         let (text_sender, text_receiver) = utils::get_channel(32);
-        let mut vad = Silero::try_new_whisper_realtime_default()
+        let vad = Silero::try_new_whisper_realtime_default()
             .expect("Silero VAD expected to build without issue");
-        let sample_up_to = ((configs.vad_sample_len() as f64 / 1000f64)
-            * transcriber::WHISPER_SAMPLE_RATE) as usize;
-
-        // Silero needs to be warmed up before it can predictably detect audio.
-        // TODO: remove this test once the new implementation (looser VAD clearing) in place
-        // This is necessary for the tests to complete - but doesn't fix the underlying jank in real-time transcription
-        let mut detected_audio = vad.voice_detected(&AUDIO_SAMPLE[..sample_up_to]);
-        if !detected_audio {
-            detected_audio = vad.voice_detected(&AUDIO_SAMPLE[..sample_up_to]);
-        }
-        assert!(detected_audio, "Failed to detect audio after warming up");
 
         let audio_ring_buffer = AudioRingBuffer::default();
         let (transcriber, handle) = RealtimeTranscriberBuilder::<Silero, DefaultModelBank>::new()
@@ -87,9 +68,16 @@ mod transcriber_tests {
 
         // Prevent logging to stderr
         redirect_whisper_logging_to_hooks();
+
+        // The audio sample has to be offset by around 206 ms or so to cut out the initial silence
+        let start_offset = ((206.0 / 1000.0) * WHISPER_SAMPLE_RATE) as usize;
+        // The last half-second or so is basically silent, so chop it off.
+        let last_idx_offset = (WHISPER_SAMPLE_RATE / 2.0) as usize;
+        let end_audio = AUDIO_SAMPLE.len() - last_idx_offset;
+
         // Break the audio sample into chunks of size constants::AUDIO_CHUNK_SIZE to simulate default
         // audio input
-        let chunks = AUDIO_SAMPLE.chunks(audio_backend::AUDIO_BUFFER_SIZE as usize);
+        let chunks = AUDIO_SAMPLE[start_offset..end_audio].chunks(audio_backend::AUDIO_BUFFER_SIZE);
         let run_transcription = Arc::new(AtomicBool::new(true));
 
         let transcribed = scope(|s| {

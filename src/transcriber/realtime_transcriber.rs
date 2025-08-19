@@ -17,13 +17,6 @@ use crate::whisper::configs::WhisperRealtimeConfigs;
 use crate::whisper::model::ModelRetriever;
 use std::error::Error;
 
-// TODO: tweak this or expose as a config.
-// If after 1 second of pure silence, clear the buffer.
-const VAD_TIMEOUT_MS: u128 = 1000;
-
-// (audio_ms / 1000) * sample_rate.
-const AUDIO_MIN_MS: usize = WHISPER_SAMPLE_RATE as usize;
-
 /// Builder for [RealtimeTranscriber]
 /// All fields are necessary and thus required to successfully build a RealtimeTranscriber.
 /// Multiple VAD implementations have been provided, see: [crate::transcriber::vad]
@@ -221,8 +214,6 @@ where
     }
 }
 
-// TODO: implement the timeout mechanism for VAD to prevent early buffer clearing.
-
 impl<V, M> Transcriber for RealtimeTranscriber<V, M>
 where
     V: VAD<f32>,
@@ -260,7 +251,9 @@ where
 
         let mut t_last = Instant::now();
 
-        let mut vad_t_timeout_instant = Instant::now();
+        // NOTE: so, instants don't seem to be the right way to test things.
+        // It seems to be triggering before 1 second has passed.
+        let mut vad_timeout_start_instant = None;
 
         // To collect audio from the ring buffer.
         let mut audio_samples: Vec<f32> = vec![0f32; N_SAMPLES_30S];
@@ -277,6 +270,8 @@ where
         // TODO: implement dirty-write semantics to cut down on snapshots.
         let mut push_snapshot = false;
 
+        // If voice is detected early but there's not enough data to run whisper, this flag should
+        // be set to guarantee inference happens after a pause.
         let mut skip_vad_run_inference = false;
 
         // Set up whisper
@@ -307,6 +302,7 @@ where
                 eprintln!("Error sending start-speaking snapshot: {:#?}", e.source())
             }
         }
+
         while run_transcription.load(Ordering::Acquire) {
             let t_now = Instant::now();
             let diff = t_now - t_last;
@@ -314,9 +310,9 @@ where
             total_time += millis;
 
             // To prevent accidental audio clearing, hold off to ensure at least
-            // vad_sample_len ms have passed before trying to detect voice.
+            // vad_sample_len() ms have passed before trying to detect voice.
+            // In case the audio backend isn't quite up to speed with
             if millis < self.configs.vad_sample_len() as u128 {
-                vad_t_timeout_instant = Instant::now();
                 sleep(Duration::from_millis(PAUSE_DURATION));
                 continue;
             }
@@ -329,11 +325,10 @@ where
             let vad_size =
                 (self.configs.vad_sample_len() as f64 / 1000f64 * WHISPER_SAMPLE_RATE) as usize;
 
-            // If the buffer has recently been cleared/there's not enough data to send to the voice detector,
-            // sleep for a little bit longer.
+            // If there's not enough samples yet to perform VAD, just skip the loop.
+            // Sleeping may or may not be required/beneficial; this has not been tested
+            // The spinlock might produce better results.
             if audio_samples.len() < vad_size {
-                vad_t_timeout_instant = Instant::now();
-                sleep(Duration::from_millis(PAUSE_DURATION));
                 continue;
             }
 
@@ -347,17 +342,24 @@ where
                 // Override if there's detected voice previously and the inference hasn't been run at least once.
 
                 if !voice_detected {
-                    // TODO: experiment with the implementation here:
-                    // It might be slightly more accurate to run the inference once more before clearing.
-
                     let vad_t_now = Instant::now();
 
-                    if vad_t_now.duration_since(vad_t_timeout_instant).as_millis() < VAD_TIMEOUT_MS
+                    // Sometimes Silero can just fail...
+                    if vad_timeout_start_instant.is_none() {
+                        vad_timeout_start_instant = Some(vad_t_now);
+                    }
+
+                    let timeout_start_instant = vad_timeout_start_instant.unwrap();
+
+                    if vad_t_now.duration_since(timeout_start_instant).as_millis() < VAD_TIMEOUT_MS
                     {
+                        // TODO: determine whether to pause + for how long.
                         continue;
                     }
 
-                    vad_t_timeout_instant = vad_t_now;
+                    // Reset the timeout instant, at this point, at least 1 second of audio has
+                    // passed.
+                    vad_timeout_start_instant = None;
 
                     // DEBUGGING.
                     if let Err(e) = self.output_sender.try_send(WhisperOutput::ControlPhrase(
@@ -382,20 +384,54 @@ where
                     // Since VAD + clearing takes up a small amount of time, keep diff ms of audio in
                     // case speech has resumed.
                     self.audio_feed.clear();
-                    // TODO: Tweak this a little.
 
-                    // This should -really- push an actual snapshot...
-                    push_snapshot = true;
+                    // TODO: factor this into a closure or a method
+                    // A snapshot should be pushed whenever there's a pause detected.
+                    let snapshot = Arc::new(TranscriptionSnapshot::new(
+                        Arc::clone(&output_string),
+                        // This will get heavy for long segments
+                        // Migrate to Arc<str>
+                        Arc::from(
+                            working_set
+                                .iter()
+                                .map(|segment| segment.text.clone())
+                                .collect::<Vec<_>>(),
+                        ),
+                    ));
+
+                    if let Err(e) = self
+                        .output_sender
+                        .try_send(WhisperOutput::TranscriptionSnapshot(snapshot))
+                    {
+                        #[cfg(feature = "ribble-logging")]
+                        {
+                            log::warn!(
+                                "Error sending transcription-snapshot mid loop: {:#?}",
+                                e.source()
+                            )
+                        }
+                        #[cfg(not(feature = "ribble-logging"))]
+                        {
+                            eprintln!(
+                                "Error sending transcription-snapshot mid loop: {:#?}",
+                                e.source()
+                            )
+                        }
+                    }
+
+                    push_snapshot = false;
 
                     // Sleep for a little bit to give the buffer time to fill up
+                    // NOTE: this might be too long.
                     sleep(Duration::from_millis(PAUSE_DURATION));
                     // Jump to the next iteration.
                     continue;
                 }
             }
 
-            // Update the vad timeout "last" to "now" since voice was detected
-            vad_t_timeout_instant = Instant::now();
+            // Set the vad timeout to None -> the inference has to get run at least once if voice
+            // is detected
+            vad_timeout_start_instant = None;
 
             // Update the time (for timeout)
             t_last = t_now;
@@ -404,8 +440,12 @@ where
             self.audio_feed
                 .read_into(self.configs.audio_sample_len_ms(), &mut audio_samples);
 
-            if audio_samples.len() < AUDIO_MIN_MS {
+            // This probably shouldn't ever happen (with the new changes).
+            if audio_samples.len() < AUDIO_MIN_LEN {
                 skip_vad_run_inference = true;
+                // Sleep for a little bit to give the buffer time to fill up
+                // NOTE: this might be too long.
+                sleep(Duration::from_millis(PAUSE_DURATION));
                 continue;
             }
 
@@ -426,6 +466,8 @@ where
             let _ = whisper_state.full(full_params.clone(), &audio_samples)?;
             let num_segments = whisper_state.full_n_segments();
             if num_segments == 0 {
+                // Sleep for a little bit to give the buffer time to fill up
+                sleep(Duration::from_millis(PAUSE_DURATION));
                 continue;
             }
 
@@ -524,7 +566,6 @@ where
 
                         // Log to follow what's going on.
                         // I have a feeling that timestamp_close is always going to be returning true
-
                         let timestamp_close =
                             time_gap < TIMESTAMP_EPSILON && similar > DIFF_THRESHOLD_MIN;
                         let compare_score = if time_gap <= TIMESTAMP_GAP {
@@ -623,6 +664,7 @@ where
                             .collect::<Vec<_>>(),
                     ),
                 ));
+
                 if let Err(e) = self
                     .output_sender
                     .try_send(WhisperOutput::TranscriptionSnapshot(snapshot))
@@ -700,7 +742,11 @@ where
         let next_text = working_set.drain(..).map(|segment| segment.into_text());
         let last_text = next_text.collect::<Vec<_>>().join(" ");
 
-        let final_out = format!("{output_string} {last_text}");
+        let final_out = if output_string.is_empty() {
+            last_text
+        } else {
+            format!("{output_string} {last_text}")
+        };
         // Set internal state to non-ready in case the transcriber is going to be reused
         self.ready.store(false, Ordering::Release);
         // Strip remaining whitespace and return
@@ -732,3 +778,7 @@ pub const N_SEGMENTS_DIFF: usize = 3;
 pub const WORKING_SET_SIZE: usize = N_SEGMENTS_DIFF * 5;
 pub const PAUSE_DURATION: u64 = 100;
 pub const N_SAMPLES_30S: usize = ((1e-3 * 30000.0) * WHISPER_SAMPLE_RATE) as usize;
+
+// TODO: determine whether this needs to be increased.
+const VAD_TIMEOUT_MS: u128 = 1000;
+const AUDIO_MIN_LEN: usize = WHISPER_SAMPLE_RATE as usize;

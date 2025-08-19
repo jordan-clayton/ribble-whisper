@@ -212,7 +212,7 @@ impl<T: voice_activity_detector::Sample> VAD<T> for Silero {
         assert_ne!(total_frames, 0);
         // If more than half the frames meet the given threshold, treat the sample as containing speech
         let voiced_proportion = voiced_frames as f32 / total_frames as f32;
-        voiced_proportion > self.voiced_proportion_threshold
+        voiced_proportion >= self.voiced_proportion_threshold
     }
     fn extract_voiced_frames(&mut self, samples: &[T]) -> Box<[T]> {
         if samples.is_empty() {
@@ -502,7 +502,7 @@ impl<T: PcmS16Convertible + Copy> VAD<T> for WebRtc {
         // Since WebRtc doesn't allow users to set the "threshold" directly, treat the threshold
         // like a minimum proportion of frames that have to be detected to be considered speech
         let voiced_proportion = (speech_frames.count() as f32) / (total_num_frames as f32);
-        voiced_proportion > self.voiced_proportion_threshold
+        voiced_proportion >= self.voiced_proportion_threshold
     }
     fn extract_voiced_frames(&mut self, samples: &[T]) -> Box<[T]> {
         if samples.is_empty() {
@@ -611,7 +611,7 @@ impl<T: PcmS16Convertible + Copy> VAD<T> for Earshot {
         // like a minimum proportion of frames that have to be detected to be considered speech
 
         let voiced_proportion = (speech_frames.count() as f32) / (total_num_frames as f32);
-        voiced_proportion > self.voiced_proportion_threshold
+        voiced_proportion >= self.voiced_proportion_threshold
     }
 
     fn extract_voiced_frames(&mut self, samples: &[T]) -> Box<[T]> {
@@ -652,9 +652,8 @@ fn prepare_webrtc_frames<T: PcmS16Convertible + Copy>(
     (int_audio, frame_size)
 }
 
-// THESE ARE RECOMMENDATIONS
-// This works best when within the range of 0.60-0.80
-// Higher thresholds are prone to false negatives.
-pub const REAL_TIME_VOICE_PROBABILITY_THRESHOLD: f32 = 0.50;
+// THESE ARE (LOWER-BOUND) RECOMMENDATIONS
+// Silero can be especially picky with certain words so err on the side of caution.
+pub const REAL_TIME_VOICE_PROBABILITY_THRESHOLD: f32 = 0.3;
 pub const DEFAULT_VOICE_PROPORTION_THRESHOLD: f32 = 0.5;
 pub const OFFLINE_VOICE_PROBABILITY_THRESHOLD: f32 = 0.60;

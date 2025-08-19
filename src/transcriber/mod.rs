@@ -2,11 +2,11 @@ use std::ops::Deref;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use strum::{Display, EnumString, IntoStaticStr};
-
-use crate::utils::callback::{Callback, ShortCircuitCallback};
+use crate::utils::callback::Callback;
 use crate::utils::errors::RibbleWhisperError;
 use crate::whisper::model::ModelLocation;
+use strum::{Display, EnumString, IntoStaticStr};
+use whisper_rs::WhisperSegment;
 
 pub mod offline_transcriber;
 pub mod realtime_transcriber;
@@ -16,13 +16,13 @@ pub mod vad;
 pub trait OfflineWhisperProgressCallback: Callback<Argument = i32> + Send + Sync + 'static {}
 impl<T: Callback<Argument = i32> + Send + Sync + 'static> OfflineWhisperProgressCallback for T {}
 
-// Trait alias, used until the feature reaches stable
+// This no longer needs to short circuit; the segment callback only fires once things are confirmed.
 pub trait OfflineWhisperNewSegmentCallback:
-    ShortCircuitCallback<Argument = TranscriptionSnapshot> + Send + Sync + 'static
+    Callback<Argument = String> + Send + Sync + 'static
 {
 }
-impl<T: ShortCircuitCallback<Argument = TranscriptionSnapshot> + Send + Sync + 'static>
-    OfflineWhisperNewSegmentCallback for T
+impl<T: Callback<Argument = String> + Send + Sync + 'static> OfflineWhisperNewSegmentCallback
+    for T
 {
 }
 
@@ -80,23 +80,69 @@ where
 
 /// Encapsulates a whisper segment with start and end timestamps
 #[derive(Clone)]
-pub struct WhisperSegment {
+pub struct RibbleWhisperSegment {
+    // TODO: make this Arc<str> to reduce the clone overhead.
     /// Segment text
     pub text: String,
-    /// Timestamp start time, measured in 0.1 ms
+    /// Timestamp start time, measured in centiseconds
     pub start_time: i64,
-    /// Timestamp end time, measured in 0.1 ms
+    /// Timestamp end time, measured in centiseconds
     pub end_time: i64,
+}
+
+impl RibbleWhisperSegment {
+    pub fn text(&self) -> &String {
+        &self.text
+    }
+
+    pub fn into_text(self) -> String {
+        self.text
+    }
+    pub fn start_timestamp(&self) -> i64 {
+        self.start_time
+    }
+
+    pub fn end_timestamp(&self) -> i64 {
+        self.end_time
+    }
+}
+
+impl<'a> From<WhisperSegment<'a>> for RibbleWhisperSegment {
+    fn from(value: WhisperSegment) -> Self {
+        Self {
+            text: value
+                .to_str_lossy()
+                .expect("This only fails on null pointer. This should not be null pointer")
+                .to_string(),
+            start_time: value.start_timestamp(),
+            end_time: value.end_timestamp(),
+        }
+    }
+}
+
+impl<'a> From<&WhisperSegment<'a>> for RibbleWhisperSegment {
+    fn from(value: &WhisperSegment<'a>) -> Self {
+        Self {
+            text: value
+                .to_str_lossy()
+                .expect("This only fails on null pointer. This should not be null pointer")
+                .to_string(),
+            start_time: value.start_timestamp(),
+            end_time: value.end_timestamp(),
+        }
+    }
 }
 
 /// Encapsulates the state of whisper transcription (confirmed + working segments) at a given point in time
 #[derive(Clone, Default)]
 pub struct TranscriptionSnapshot {
-    confirmed: Arc<String>,
+    confirmed: Arc<str>,
+    // This should probably be Arc<[Arc<str>]>
+    // Otherwise this is going to involve a lot of string clones.
     string_segments: Arc<[String]>,
 }
 impl TranscriptionSnapshot {
-    pub fn new(confirmed: Arc<String>, string_segments: Arc<[String]>) -> Self {
+    pub fn new(confirmed: Arc<str>, string_segments: Arc<[String]>) -> Self {
         Self {
             confirmed,
             string_segments,
@@ -110,21 +156,21 @@ impl TranscriptionSnapshot {
         &self.string_segments
     }
 
-    pub fn into_parts(self) -> (Arc<String>, Arc<[String]>) {
+    pub fn into_parts(self) -> (Arc<str>, Arc<[String]>) {
         (self.confirmed, self.string_segments)
     }
     pub fn into_string(self) -> String {
-        let mut confirmed = self.confirmed.deref().clone();
-        confirmed.extend(self.string_segments.iter().cloned());
-        confirmed
+        let confirmed = self.confirmed.deref();
+        let segment_string = self.string_segments.join(" ");
+        format!("{confirmed} {segment_string}")
     }
 }
 
 impl std::fmt::Display for TranscriptionSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut confirmed = self.confirmed.deref().clone();
-        confirmed.extend(self.string_segments.iter().cloned());
-        write!(f, "{confirmed}")
+        let confirmed = self.confirmed.deref();
+        let segment_string = self.string_segments.join(" ");
+        write!(f, "{confirmed} {segment_string}")
     }
 }
 

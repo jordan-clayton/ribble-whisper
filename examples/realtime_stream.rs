@@ -251,7 +251,7 @@ fn main() {
             progress: Some(static_progress_callback),
             // If you want to run a similar UI RPL like in the realtime example, the new segment callback
             // will let you access a snapshot to send via a message queue or similar.
-            new_segment: None::<Nop<TranscriptionSnapshot>>,
+            new_segment: None::<Nop<String>>,
         };
 
         let transcription =

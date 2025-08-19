@@ -1,6 +1,8 @@
 [package]
 name = "ribble_whisper"
-version = "0.1.3"
+# TODO: if there are genuinely breaking changes, bump this to 0.2?
+# Since this really isn't "done" yet as a library, it probably doesn't matter too much.
+version = "0.2.0"
 edition = "2024"
 description = "High-level wrapper around whisper-rs features with support for realtime transcription; designed for use in GUI and TUI applications."
 readme = "README.md"
@@ -16,31 +18,29 @@ doctest = false
 license-notes = "Includes third-party code under MPL-2.0 and BSD-3-Clause. See LICENSE-MPL-2.0 and LICENSE-BSD-3."
 
 [dependencies]
-serde = { version = "1.0.204", features = ["derive"], optional = true }
-serde_json = { version = "1.0.140", optional = true }
+serde = { version = "1.0.219", features = ["derive"], optional = true }
+serde_json = { version = "1.0.142", optional = true }
 rubato = { version = "0.16.2", optional = true }
-whisper-rs = { version = "0.14.3", features = ["log_backend", "tracing_backend"] }
-whisper-rs-sys = "0.13.0"
+whisper-rs = { version = "0.15.0", features = ["log_backend", "tracing_backend"] }
+whisper-rs-sys = "0.14.0"
 sdl2 = { version = "0.38.0", optional = true }
-reqwest = { version = "0.12.5", features = ["blocking", "stream"], optional = true }
-futures = { version = "0.3.30", optional = true }
-futures-util = { version = "0.3.30", optional = true }
-futures-core = { version = "0.3.30", optional = true }
-bytes = { version = "1.6.1", optional = true }
-tokio = { version = "1.39.2", features = ["rt-multi-thread"], optional = true }
+reqwest = { version = "0.12.23", features = ["blocking", "stream"], optional = true }
+futures = { version = "0.3.31", optional = true }
+futures-util = { version = "0.3.31", optional = true }
+futures-core = { version = "0.3.31", optional = true }
+bytes = { version = "1.10.1", optional = true }
+tokio = { version = "1.47.1", features = ["rt-multi-thread"], optional = true }
 crossbeam = { version = "0.8.4", optional = true }
-strum = { version = "0.27.1", features = ["derive"] }
+strum = { version = "0.27.2", features = ["derive"] }
 symphonia = { version = "0.5.4", features = ["mp3", "opt-simd"] }
-thiserror = "2.0.12"
+thiserror = "2.0.15"
 url = "2.5.4"
 sha2 = { version = "0.10.9", optional = true }
 regex = { version = "1.11.1", optional = true }
 sha1 = { version = "0.10.6", optional = true }
-# Until voice_activity_detector is updated to address breaking changes in the
-# ort crate, these two crates need to be pinned to the following versions.
-ort-sys = "=2.0.0-rc.9"
-ort = { version = "=2.0.0-rc.9", features = ["ndarray"] }
-voice_activity_detector = "0.2.0"
+# TODO: look at forking voice_activity_detector to include passthrough args for CUDA + COREML execution providers
+# Also: change the default session to try-load said execution providers (see Ort docs).
+voice_activity_detector = "0.2.1"
 earshot = "0.1.0"
 webrtc-vad = "0.4.0"
 parking_lot = { version = "0.12.4", features = ["deadlock_detection"] }
@@ -52,7 +52,7 @@ log = { version = "0.4.27", optional = true }
 criterion = "0.7.0"
 indicatif = "0.18.0"
 hound = "3.5.1"
-ctrlc = "3.4.4"
+ctrlc = "3.4.7"
 
 [target.aarch64-apple-darwin]
 rustflags = "-lc++ -l framework=Accelerate"
@@ -66,7 +66,7 @@ default = ["sdl2"]
 ribble-logging = ["dep:log"]
 sdl2 = ["dep:sdl2"]
 sdl2-static = ["sdl2", "sdl2/static-link", "sdl2/bundled"]
-all = ["downloader-async", "resampler", "integrity", "crossbeam", "serde"]
+all = ["downloader-async", "resampler", "integrity", "crossbeam", "serde", "sdl2"]
 _gpu = []
 crossbeam = ["dep:crossbeam"]
 serde = ["dep:serde"]

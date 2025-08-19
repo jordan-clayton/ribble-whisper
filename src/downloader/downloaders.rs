@@ -555,9 +555,9 @@ impl BorrowedDownloadResponse<'_> {
         }
     }
     fn response_headers_get_all(
-        &self,
+        &'_ self,
         header: reqwest::header::HeaderName,
-    ) -> reqwest::header::GetAll<reqwest::header::HeaderValue> {
+    ) -> reqwest::header::GetAll<'_, reqwest::header::HeaderValue> {
         match self {
             BorrowedDownloadResponse::Async(resp) => resp.headers().get_all(header),
             BorrowedDownloadResponse::Blocking(resp) => resp.headers().get_all(header),

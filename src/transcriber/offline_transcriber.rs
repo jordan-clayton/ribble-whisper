@@ -9,7 +9,7 @@ use crate::audio::{AudioChannelConfiguration, WhisperAudioSample};
 use crate::transcriber::vad::VAD;
 use crate::transcriber::{
     build_whisper_context, CallbackTranscriber, OfflineWhisperNewSegmentCallback,
-    OfflineWhisperProgressCallback, Transcriber, TranscriptionSnapshot, WhisperCallbacks,
+    OfflineWhisperProgressCallback, Transcriber, WhisperCallbacks,
 };
 use crate::utils::errors::RibbleWhisperError;
 use crate::whisper::configs::WhisperConfigsV2;
@@ -253,14 +253,12 @@ where
 
         // Otherwise, expect the transcription to have been successful; subsequent errors
         // will bubble up.
-        let num_segments = whisper_state.full_n_segments()?;
+        let num_segments = whisper_state.full_n_segments();
         let mut text = Vec::with_capacity(num_segments as usize);
 
-        // Transcribe segments and send through a channel to a UI.
-        for i in 0..num_segments {
-            if let Ok(segment) = whisper_state.full_get_segment_text_lossy(i) {
-                text.push(segment.clone());
-            }
+        // Push the transcribed segments to the text buffer
+        for segment in whisper_state.as_iter() {
+            text.push(segment.to_string())
         }
 
         // Clean up the whisper context
@@ -423,49 +421,26 @@ unsafe extern "C" fn progress_callback<PC: OfflineWhisperProgressCallback>(
     callback.call(progress);
 }
 
-// This callback is used to forward the most up-to-date transcription snapshot from Whisper to a UI.
-
-// Since the state is used in this callback, it cannot be guaranteed that it will be safe.
-// There is no way to offer this feature without using the state, since the state is required for
-// grabbing segment text -- but this function follows whisper_rs conventions for trampolining, so it is most likely safe.
-
-// NOTE: this is obviously not the most efficient--but whisper apparently does its own
-// mutation/correction to previous segments as it receives more information.
-//
-// In place of pushing out the newest n_next segments and expecting the user to do a last-3 segment
-// diffing strategy (apparently the mutation usually only happens around the last 3 segments or
-// so), instead this opts for a callback that short-circuits the callback based on a condition.
-// If the callback should run on a full snapshot, this will collect the n segments into a full
-// snapshot and then perform the callback on it.
-//
-// Bear in mind, this has relatively high memory and time requirements and this callback can fire
-// rapidly. If performance is of concern, only fire the callback over a limited period.
-//
-// NOTE: this may change at a later date to allow swapping between full snapshots and only the
-// n_next segments.
+// This callback fires once new segments have been confirmed to push the last n segments
+// joined together into a single string which can be pushed to a working buffer or similar.
 unsafe extern "C" fn new_segment_callback<S: OfflineWhisperNewSegmentCallback>(
     _: *mut whisper_rs_sys::whisper_context,
     state: *mut whisper_rs_sys::whisper_state,
-    _n_next: c_int,
+    n_new: c_int,
     user_data: *mut c_void,
 ) {
     let callback = unsafe { &mut *(user_data as *mut S) };
 
-    // Escape early if the callback shouldn't fire.
-    if !callback.should_run_callback() {
-        return;
-    }
-
     // Collect into a snapshot and then call the callback.
     let n_segments = unsafe { whisper_rs_sys::whisper_full_n_segments_from_state(state) };
-    let mut segments = Vec::with_capacity(n_segments as usize);
-    for i in 0..n_segments {
+    let s0 = (n_segments - n_new).min(0);
+    let mut segments = Vec::with_capacity(n_new as usize);
+
+    for i in s0..n_segments {
         let text = unsafe { whisper_rs_sys::whisper_full_get_segment_text_from_state(state, i) };
         let segment = unsafe { CStr::from_ptr(text) };
-        segments.push(segment.to_string_lossy().to_string())
+        segments.push(segment.to_string_lossy())
     }
-    callback.call(TranscriptionSnapshot {
-        confirmed: Arc::new(String::default()),
-        string_segments: Arc::from(segments),
-    })
+    let new_segments = segments.join(" ");
+    callback.call(new_segments);
 }

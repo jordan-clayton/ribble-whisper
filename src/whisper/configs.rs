@@ -215,7 +215,7 @@ impl WhisperConfigsV2 {
     /// Note: these configurations do not cover FullParams in entirety
     /// Features are exposed on an as-needed bases.
     /// See: [whisper_rs::FullParams] for documentation.
-    pub fn to_whisper_full_params(&self) -> whisper_rs::FullParams {
+    pub fn to_whisper_full_params(&'_ self) -> whisper_rs::FullParams<'_, '_> {
         let mut params = match self.sampling_strategy {
             WhisperSamplingStrategy::Greedy { best_of } => {
                 whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy {
@@ -250,7 +250,7 @@ impl WhisperConfigsV2 {
     }
 
     /// Constructs a WhisperContextParameters object used to build [whisper_rs::WhisperContext]
-    pub fn to_whisper_context_params(&self) -> whisper_rs::WhisperContextParameters {
+    pub fn to_whisper_context_params(&'_ self) -> whisper_rs::WhisperContextParameters<'_> {
         let mut params = whisper_rs::WhisperContextParameters::default();
         params.use_gpu(self.use_gpu);
         params.flash_attn(self.flash_attention);
@@ -648,7 +648,7 @@ impl WhisperRealtimeConfigs {
     /// Note: these configurations do not cover FullParams in entirety
     /// Features are exposed on an as-needed bases.
     /// See: [whisper_rs::FullParams] for documentation.
-    pub fn to_whisper_full_params(&self) -> whisper_rs::FullParams {
+    pub fn to_whisper_full_params(&'_ self) -> whisper_rs::FullParams<'_, '_> {
         let mut params = self.whisper.to_whisper_full_params();
         // Forcing single segment transcription helps alleviate transcription artifacts when
         // running realtime to reduce the amount of false negatives in the
@@ -657,7 +657,7 @@ impl WhisperRealtimeConfigs {
         params
     }
     /// Constructs a WhisperContextParameters object used to build [whisper_rs::WhisperContext]
-    pub fn to_whisper_context_params(&self) -> whisper_rs::WhisperContextParameters {
+    pub fn to_whisper_context_params(&'_ self) -> whisper_rs::WhisperContextParameters<'_> {
         self.whisper.to_whisper_context_params()
     }
 }

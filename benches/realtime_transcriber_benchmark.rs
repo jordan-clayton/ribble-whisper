@@ -10,14 +10,17 @@ use ribble_whisper::audio::{audio_backend, WhisperAudioSample};
 use ribble_whisper::transcriber::realtime_transcriber::{
     RealtimeTranscriber, RealtimeTranscriberBuilder, RealtimeTranscriberHandle,
 };
-use ribble_whisper::transcriber::vad::{Silero, SileroBuilder, WebRtcBuilder, VAD};
-use ribble_whisper::transcriber::{vad, Transcriber, WhisperOutput};
+use ribble_whisper::transcriber::vad::{
+    Silero, SileroBuilder, SileroSampleRate,
+    WebRtcBuilder, DEFAULT_VOICE_PROPORTION_THRESHOLD, REAL_TIME_VOICE_PROBABILITY_THRESHOLD, VAD,
+};
+use ribble_whisper::transcriber::{Transcriber, WhisperOutput};
+use ribble_whisper::utils;
 use ribble_whisper::utils::errors::RibbleWhisperError;
 use ribble_whisper::utils::Receiver;
 use ribble_whisper::whisper::configs;
 use ribble_whisper::whisper::configs::WhisperRealtimeConfigs;
 use ribble_whisper::whisper::model::{DefaultModelBank, DefaultModelType, ModelBank};
-use ribble_whisper::{transcriber, utils};
 
 // Bear in mind, this benchmark is a little fragile given the test structure and the difficulty of
 // simulating the realtime loop. It is highly unlikely to fail at a point where the bench will
@@ -37,16 +40,16 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
     // In practice, this is fine because it will pick up next read and the audio will not get lost.
     // In these test conditions, there is a risk the audio buffer might get cleared prematurely
 
-    let chunks = audio_sample.chunks(audio_backend::AUDIO_BUFFER_SIZE as usize);
+    let chunks = audio_sample.chunks(audio_backend::AUDIO_BUFFER_SIZE);
     for chunk in chunks {
         audio_ring_buffer.push_audio(chunk);
     }
 
     let silero_build_method = || {
         SileroBuilder::new()
-            .with_sample_rate(transcriber::WHISPER_SAMPLE_RATE as i64)
-            .with_chunk_size(vad::DEFAULT_SILERO_CHUNK_SIZE)
-            .with_detection_probability_threshold(0.5)
+            .with_sample_rate(SileroSampleRate::R16kHz)
+            .with_detection_probability_threshold(REAL_TIME_VOICE_PROBABILITY_THRESHOLD)
+            .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
             .build()
     };
 
@@ -59,7 +62,7 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
             .with_filter_aggressiveness(
                 ribble_whisper::transcriber::vad::WebRtcFilterAggressiveness::LowBitrate,
             )
-            .with_detection_probability_threshold(0.5)
+            .with_voiced_proportion_threshold(0.5)
             .build_webrtc()
     };
 
@@ -72,7 +75,7 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
             .with_filter_aggressiveness(
                 ribble_whisper::transcriber::vad::WebRtcFilterAggressiveness::LowBitrate,
             )
-            .with_detection_probability_threshold(0.5)
+            .with_voiced_proportion_threshold(0.5)
             .build_earshot()
     };
 
@@ -153,7 +156,7 @@ pub fn realtime_bencher<V: VAD<f32> + Send + Sync>(
     whisper_rs::install_logging_hooks();
     // Break the audio sample into chunks of size constants::AUDIO_CHUNK_SIZE to simulate default
     // audio input
-    let chunks = audio_sample.chunks(audio_backend::AUDIO_BUFFER_SIZE as usize);
+    let chunks = audio_sample.chunks(audio_backend::AUDIO_BUFFER_SIZE);
     let run_transcription = Arc::new(AtomicBool::new(true));
     scope(|s| {
         let t_thread_run_transcription = Arc::clone(&run_transcription);

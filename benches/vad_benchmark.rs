@@ -2,10 +2,10 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use hound::SampleFormat;
 
 use ribble_whisper::audio::pcm::IntoPcmS16;
-use ribble_whisper::transcriber::vad;
 use ribble_whisper::transcriber::vad::WebRtcSampleRate::R8kHz;
 use ribble_whisper::transcriber::vad::{
-    Earshot, Silero, SileroBuilder, WebRtc, WebRtcBuilder, WebRtcFilterAggressiveness, VAD,
+    Earshot, Silero, SileroBuilder, SileroSampleRate,
+    WebRtc, WebRtcBuilder, WebRtcFilterAggressiveness, DEFAULT_VOICE_PROPORTION_THRESHOLD, REAL_TIME_VOICE_PROBABILITY_THRESHOLD, VAD,
 };
 pub fn vad_benchmark(c: &mut Criterion) {
     // Load the audio sample to pass to each benchmark function
@@ -27,22 +27,22 @@ pub fn vad_benchmark(c: &mut Criterion) {
     };
 
     let mut silero = SileroBuilder::new()
-        .with_sample_rate(8000)
-        .with_chunk_size(vad::DEFAULT_SILERO_CHUNK_SIZE)
-        .with_detection_probability_threshold(vad::SILERO_VOICE_PROBABILITY_THRESHOLD)
+        .with_sample_rate(SileroSampleRate::R8kHz)
+        .with_detection_probability_threshold(REAL_TIME_VOICE_PROBABILITY_THRESHOLD)
+        .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
         .build()
         .expect("Silero VAD should build without problems");
 
     let mut webrtc = WebRtcBuilder::new()
         .with_sample_rate(R8kHz)
         .with_filter_aggressiveness(WebRtcFilterAggressiveness::LowBitrate)
-        .with_detection_probability_threshold(vad::SILERO_VOICE_PROBABILITY_THRESHOLD)
+        .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
         .build_webrtc()
         .expect("Silero VAD should build without problems");
     let mut earshot = WebRtcBuilder::new()
         .with_sample_rate(R8kHz)
         .with_filter_aggressiveness(WebRtcFilterAggressiveness::LowBitrate)
-        .with_detection_probability_threshold(vad::SILERO_VOICE_PROBABILITY_THRESHOLD)
+        .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
         .build_earshot()
         .expect("Silero VAD should build without problems");
 

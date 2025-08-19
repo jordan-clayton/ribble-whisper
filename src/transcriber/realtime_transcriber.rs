@@ -1,6 +1,5 @@
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::ops::Deref;
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -9,14 +8,21 @@ use strsim::jaro_winkler;
 use crate::audio::audio_ring_buffer::AudioRingBuffer;
 use crate::transcriber::vad::VAD;
 use crate::transcriber::{
-    build_whisper_context, Transcriber, TranscriptionSnapshot, WhisperControlPhrase, WhisperOutput,
-    WhisperSegment, WHISPER_SAMPLE_RATE,
+    build_whisper_context, RibbleWhisperSegment, Transcriber, TranscriptionSnapshot,
+    WhisperControlPhrase, WhisperOutput, WHISPER_SAMPLE_RATE,
 };
 use crate::utils::errors::RibbleWhisperError;
 use crate::utils::Sender;
 use crate::whisper::configs::WhisperRealtimeConfigs;
 use crate::whisper::model::ModelRetriever;
 use std::error::Error;
+
+// TODO: tweak this or expose as a config.
+// If after 1 second of pure silence, clear the buffer.
+const VAD_TIMEOUT_MS: u128 = 1000;
+
+// (audio_ms / 1000) * sample_rate.
+const AUDIO_MIN_MS: usize = WHISPER_SAMPLE_RATE as usize;
 
 /// Builder for [RealtimeTranscriber]
 /// All fields are necessary and thus required to successfully build a RealtimeTranscriber.
@@ -215,6 +221,8 @@ where
     }
 }
 
+// TODO: implement the timeout mechanism for VAD to prevent early buffer clearing.
+
 impl<V, M> Transcriber for RealtimeTranscriber<V, M>
 where
     V: VAD<f32>,
@@ -252,15 +260,24 @@ where
 
         let mut t_last = Instant::now();
 
+        let mut vad_t_timeout_instant = Instant::now();
+
         // To collect audio from the ring buffer.
         let mut audio_samples: Vec<f32> = vec![0f32; N_SAMPLES_30S];
 
         // For timing the transcription (and timeout)
+        // This could just use duration objects instead of accumulating millis.
         let mut total_time = 0u128;
 
         // For collecting the transcribed segments to return a full transcription at the end
-        let mut output_string = Arc::new(String::default());
-        let mut working_set: VecDeque<WhisperSegment> = VecDeque::with_capacity(WORKING_SET_SIZE);
+        let mut output_string: Arc<str> = Arc::from(String::default());
+        let mut working_set: VecDeque<RibbleWhisperSegment> =
+            VecDeque::with_capacity(WORKING_SET_SIZE);
+
+        // TODO: implement dirty-write semantics to cut down on snapshots.
+        let mut push_snapshot = false;
+
+        let mut skip_vad_run_inference = false;
 
         // Set up whisper
         let full_params = self.configs.to_whisper_full_params();
@@ -299,6 +316,7 @@ where
             // To prevent accidental audio clearing, hold off to ensure at least
             // vad_sample_len ms have passed before trying to detect voice.
             if millis < self.configs.vad_sample_len() as u128 {
+                vad_t_timeout_instant = Instant::now();
                 sleep(Duration::from_millis(PAUSE_DURATION));
                 continue;
             }
@@ -314,46 +332,80 @@ where
             // If the buffer has recently been cleared/there's not enough data to send to the voice detector,
             // sleep for a little bit longer.
             if audio_samples.len() < vad_size {
+                vad_t_timeout_instant = Instant::now();
                 sleep(Duration::from_millis(PAUSE_DURATION));
                 continue;
             }
 
-            // Check for voice activity
-            // In case the audio needs to be cleared, record the amount of time for VAD + lock
-            // contention, so that audio isn't fully lost.
-            let voice_detected = self.vad.lock().voice_detected(&audio_samples);
-            if !voice_detected {
-                // TODO: experiment with the implementation here:
-                // It might be slightly more accurate to run the inference once more before clearing.
+            if !skip_vad_run_inference {
+                // Check for voice activity
+                // In case the audio needs to be cleared, record the amount of time for VAD + lock
+                // contention, so that audio isn't fully lost.
+                let voice_detected = self.vad.lock().voice_detected(&audio_samples);
 
-                // DEBUGGING.
-                if let Err(e) = self.output_sender.try_send(WhisperOutput::ControlPhrase(
-                    WhisperControlPhrase::Debug("PAUSE DETECTED".to_string()),
-                )) {
-                    #[cfg(feature = "ribble-logging")]
+                // TODO: timeout system: 100-1000ms of pause before clear.
+                // Override if there's detected voice previously and the inference hasn't been run at least once.
+
+                if !voice_detected {
+                    // TODO: experiment with the implementation here:
+                    // It might be slightly more accurate to run the inference once more before clearing.
+
+                    let vad_t_now = Instant::now();
+
+                    if vad_t_now.duration_since(vad_t_timeout_instant).as_millis() < VAD_TIMEOUT_MS
                     {
-                        eprintln!("Error sending pause debug phrase: {:#?}", e.source())
+                        continue;
                     }
-                    #[cfg(not(feature = "ribble-logging"))]
-                    {
-                        eprintln!("Error sending debug phrase: {:#?}", e.source())
-                    }
-                };
 
-                // Drain the dequeue and push to the confirmed output_string
-                let next_output = working_set.drain(..).map(|output| output.text);
-                let mut new_out = output_string.deref().clone();
-                new_out.extend(next_output);
-                output_string = Arc::new(new_out);
+                    vad_t_timeout_instant = vad_t_now;
 
-                // Clear the audio buffer to prevent data incoherence messing up the transcription.
-                // Since VAD + clearing takes up a small amount of time, keep diff ms of audio in
-                // case speech has resumed.
-                self.audio_feed.clear();
+                    // DEBUGGING.
+                    if let Err(e) = self.output_sender.try_send(WhisperOutput::ControlPhrase(
+                        WhisperControlPhrase::Debug("PAUSE DETECTED".to_string()),
+                    )) {
+                        #[cfg(feature = "ribble-logging")]
+                        {
+                            eprintln!("Error sending pause debug phrase: {:#?}", e.source())
+                        }
+                        #[cfg(not(feature = "ribble-logging"))]
+                        {
+                            eprintln!("Error sending debug phrase: {:#?}", e.source())
+                        }
+                    };
 
-                // Sleep for a little bit to give the buffer time to fill up
-                sleep(Duration::from_millis(PAUSE_DURATION));
-                // Jump to the next iteration.
+                    // Drain the dequeue and push to the confirmed output_string
+                    let next_output = working_set.drain(..).map(|output| output.into_text());
+                    let new_confirmed = next_output.collect::<Vec<_>>().join(" ");
+                    output_string = Arc::from(format!("{output_string} {new_confirmed}"));
+
+                    // Clear the audio buffer to prevent data incoherence messing up the transcription.
+                    // Since VAD + clearing takes up a small amount of time, keep diff ms of audio in
+                    // case speech has resumed.
+                    self.audio_feed.clear();
+                    // TODO: Tweak this a little.
+
+                    // This should -really- push an actual snapshot...
+                    push_snapshot = true;
+
+                    // Sleep for a little bit to give the buffer time to fill up
+                    sleep(Duration::from_millis(PAUSE_DURATION));
+                    // Jump to the next iteration.
+                    continue;
+                }
+            }
+
+            // Update the vad timeout "last" to "now" since voice was detected
+            vad_t_timeout_instant = Instant::now();
+
+            // Update the time (for timeout)
+            t_last = t_now;
+
+            // Read the audio buffer in chunks of audio_sample_len
+            self.audio_feed
+                .read_into(self.configs.audio_sample_len_ms(), &mut audio_samples);
+
+            if audio_samples.len() < AUDIO_MIN_MS {
+                skip_vad_run_inference = true;
                 continue;
             }
 
@@ -371,38 +423,34 @@ where
                 }
             };
 
-            // Update the time (for timeout)
-            t_last = t_now;
-
-            // Read the audio buffer in chunks of audio_sample_len
-            self.audio_feed
-                .read_into(self.configs.audio_sample_len_ms(), &mut audio_samples);
-
             let _ = whisper_state.full(full_params.clone(), &audio_samples)?;
-            let num_segments = whisper_state.full_n_segments()?;
+            let num_segments = whisper_state.full_n_segments();
             if num_segments == 0 {
                 continue;
             }
 
-            // It's not a big deal if there are invalid utf-8 characters
-            // Use lossy to just swap it with the replacement character
-            let mut segments = (0..num_segments)
-                .map(|i| {
-                    let text = whisper_state.full_get_segment_text_lossy(i)?;
-                    let start_time = whisper_state.full_get_segment_t0(i)? * 10;
-                    let end_time = whisper_state.full_get_segment_t1(i)? * 10;
-                    Ok(WhisperSegment {
-                        text,
+            // If there's a null pointer, just skip over the segment
+            // That should never really happen, so
+            let mut segments = whisper_state
+                .as_iter()
+                .map(|ws| {
+                    let text = ws.to_str_lossy()?;
+                    let start_time = ws.start_timestamp();
+                    let end_time = ws.end_timestamp();
+                    Ok(RibbleWhisperSegment {
+                        text: text.to_string(),
                         start_time,
                         end_time,
                     })
                 })
-                .collect::<Result<Vec<WhisperSegment>, whisper_rs::WhisperError>>()?;
+                .filter(|ws| ws.is_ok())
+                .map(|ws: Result<RibbleWhisperSegment, RibbleWhisperError>| ws.unwrap());
 
             // If the working set is empty, push the segments into the working set.
             // i.e. This should only happen on first run.
             if working_set.is_empty() {
-                working_set.extend(segments.drain(..));
+                working_set.extend(segments);
+                push_snapshot = true;
             }
             // Otherwise, run the diffing algorithm
             // This is admittedly a little haphazard, but it seems good enough and can tolerate
@@ -421,30 +469,48 @@ where
                 let old_len = old_segments.len();
                 let tail = old_segments[old_len.saturating_sub(N_SEGMENTS_DIFF)..].iter_mut();
 
-                let head = segments
-                    .drain(..N_SEGMENTS_DIFF.min(segments.len()))
-                    .collect::<Vec<_>>();
+                let mut head: Vec<RibbleWhisperSegment> = Vec::with_capacity(N_SEGMENTS_DIFF);
+
+                for _ in 0..N_SEGMENTS_DIFF {
+                    if let Some(segment) = segments.next() {
+                        head.push(segment)
+                    } else {
+                        break;
+                    }
+                }
 
                 // For collecting swaps
                 let mut swap_indices = Vec::with_capacity(N_SEGMENTS_DIFF);
 
                 // This is Amortized O(1), with an upper bound of constants::N_SEGMENTS_DIFF * constants::N_SEGMENTS_DIFF iterations
                 // In practice this is very unlikely to hit that upper bound.
+
+                // TODO: log this -> it might be the case that only the high-match branch is taken
+                // I'm genuinely not sure: this really does need to be tested more thoroughly.
+                // (But the tests all still pass, so it should be -mostly- correct)
                 for old_segment in tail {
                     // This might be a little conservative, but it's better to be safe.
                     // It is expected that if there is a good match, it's 1:1 on each of the timestamps
                     let mut best_score = 0.0;
-                    let mut best_match = None::<&WhisperSegment>;
-                    // This is out of bounds, but it should always be swapped if there's a best_match
+                    let mut best_match = None::<&RibbleWhisperSegment>;
+                    // This is out of bounds, but it should always be swapped if there's a best match
+                    // TODO: this should -probably- be an option.
                     let mut best_index = N_SEGMENTS_DIFF;
+
                     // Get the head N_SEGMENTS
                     for (index, new_segment) in head.iter().enumerate() {
                         // With the way that segments are being output, it seems to work a little better
                         // If when comparing timestamps, to match on starting alignment.
-                        // The size of the working set is small enough such that the
-                        let time_gap = (old_segment.start_time - new_segment.start_time).abs();
-                        let old_lower = old_segment.text.to_lowercase();
-                        let new_lower = new_segment.text.to_lowercase();
+
+                        // NOTE: I'm not actually so confident that's correct.
+                        // It should be the case that they'll both be nearly 0 because the audio
+                        // is a sliding window
+
+                        let time_gap =
+                            (old_segment.start_timestamp() - new_segment.start_timestamp()).abs();
+                        let old_lower = old_segment.text().to_lowercase();
+                        let new_segment_text = new_segment.text();
+                        let new_lower = new_segment_text.to_lowercase();
                         let similar = jaro_winkler(&old_lower, &new_lower);
                         // If it's within the same alignment, it's likely for the segments to be
                         // a match (i.e. the audio buffer has recently been cleared, and this is a new window)
@@ -452,6 +518,13 @@ where
 
                         // If the timestamp is close enough such that it's lower than the epsilon: (10 ms)
                         // Consider it to be a 1:1 match.
+
+                        // TODO: rethink the logic of this here; it's a little arbitrary.
+                        // The timestamps may not actually be all that helpful.
+
+                        // Log to follow what's going on.
+                        // I have a feeling that timestamp_close is always going to be returning true
+
                         let timestamp_close =
                             time_gap < TIMESTAMP_EPSILON && similar > DIFF_THRESHOLD_MIN;
                         let compare_score = if time_gap <= TIMESTAMP_GAP {
@@ -486,14 +559,16 @@ where
                             best_index = index;
                         }
                     }
-                    if let Some(new_seg) = best_match {
+                    if let Some(new_seg) = best_match.take() {
                         // Swap the longer of the two segments in hopes that false positives do not clobber the output
                         // And also that it is the most semantically correct output. Anticipate and expect a little crunchiness.
-                        if new_seg.text.len() > old_segment.text.len() {
+                        if new_seg.text().len() > old_segment.text().len() {
                             *old_segment = new_seg.clone();
                         }
                         assert_ne!(best_index, N_SEGMENTS_DIFF);
-                        swap_indices.push(best_index)
+                        swap_indices.push(best_index);
+                        // Push the snapshot if a swap has taken place
+                        push_snapshot = true;
                     }
                 }
 
@@ -503,12 +578,18 @@ where
                     if !swap_indices.contains(&index) {
                         // If the segment was never swapped in, treat it as a new segment and push it to the output buffer
                         // It is not impossible for this to break sequence, but it is highly unlikely.
-                        working_set.push_back(new_seg)
+                        working_set.push_back(new_seg.into());
+                        // If a new segment gets pushed to the working set, a snapshot should be pushed.
+                        push_snapshot = true;
                     }
                 }
+
+                let old_len = working_set.len();
+                // If there are any remaining segments, drain them into the working set.
+                working_set.extend(segments.map(|ws| ws.into()));
+                let new_len = working_set.len();
+                push_snapshot |= old_len != new_len;
             }
-            // If there are any remaining segments, drain them into the working set.
-            working_set.extend(segments.drain(..));
 
             // Drain the working set when it exceeds its bounded size. It is most likely that the
             // n segments drained are actually part of the transcription.
@@ -519,17 +600,22 @@ where
             if working_set.len() > WORKING_SET_SIZE {
                 let next_text = working_set
                     .drain(0..working_set.len().saturating_sub(WORKING_SET_SIZE))
-                    .map(|segment| segment.text);
-                let mut new_out = output_string.deref().clone();
-                new_out.extend(next_text);
+                    .map(|segment| segment.into_text());
+
+                let next_text_string = next_text.collect::<Vec<_>>().join(" ");
                 // Push to the output string.
-                output_string = Arc::new(new_out);
+                output_string = Arc::from(format!("{output_string} {next_text_string}"));
+                push_snapshot = true;
             }
 
             // Send the current transcription as it exists, so that the UI can update
-            if !output_string.is_empty() || !working_set.is_empty() {
+            // TODO: this should leverage dirty/CoW semantics to only send out a snapshot if there's a significant change.
+            // Otherwise we're in clone-city, baby.
+            if push_snapshot {
                 let snapshot = Arc::new(TranscriptionSnapshot::new(
                     Arc::clone(&output_string),
+                    // This will get heavy for long segments
+                    // Migrate to Arc<str>
                     Arc::from(
                         working_set
                             .iter()
@@ -556,6 +642,8 @@ where
                         )
                     }
                 }
+
+                push_snapshot = false;
             }
 
             // If the timeout is set to 0, this loop runs infinitely.
@@ -609,10 +697,10 @@ where
         drop(ctx);
 
         // Drain the last of the working set.
-        let next_text = working_set.drain(..).map(|segment| segment.text);
-        let mut final_out = output_string.deref().clone();
-        final_out.extend(next_text);
+        let next_text = working_set.drain(..).map(|segment| segment.into_text());
+        let last_text = next_text.collect::<Vec<_>>().join(" ");
 
+        let final_out = format!("{output_string} {last_text}");
         // Set internal state to non-ready in case the transcriber is going to be reused
         self.ready.store(false, Ordering::Release);
         // Strip remaining whitespace and return

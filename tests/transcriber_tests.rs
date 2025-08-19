@@ -14,14 +14,13 @@ mod transcriber_tests {
     use ribble_whisper::transcriber::realtime_transcriber::RealtimeTranscriberBuilder;
     use ribble_whisper::transcriber::vad::{Silero, VAD};
     use ribble_whisper::transcriber::{
-        redirect_whisper_logging_to_hooks, CallbackTranscriber, Transcriber, TranscriptionSnapshot, WhisperCallbacks,
+        redirect_whisper_logging_to_hooks, CallbackTranscriber, Transcriber, WhisperCallbacks,
         WhisperOutput,
     };
-    use ribble_whisper::utils::callback::{Nop, ShortCircuitRibbleWhisperCallback};
+    use ribble_whisper::utils::callback::{Nop, RibbleWhisperCallback};
     use ribble_whisper::whisper::configs::{WhisperConfigsV2, WhisperRealtimeConfigs};
     use ribble_whisper::whisper::model::{DefaultModelBank, DefaultModelType};
     use ribble_whisper::{transcriber, utils};
-    use std::time::Instant;
 
     // Prepare an audio sample with a known output to try and make conditions as replicable as
     // possible
@@ -64,6 +63,8 @@ mod transcriber_tests {
             * transcriber::WHISPER_SAMPLE_RATE) as usize;
 
         // Silero needs to be warmed up before it can predictably detect audio.
+        // TODO: remove this test once the new implementation (looser VAD clearing) in place
+        // This is necessary for the tests to complete - but doesn't fix the underlying jank in real-time transcription
         let mut detected_audio = vad.voice_detected(&AUDIO_SAMPLE[..sample_up_to]);
         if !detected_audio {
             detected_audio = vad.voice_detected(&AUDIO_SAMPLE[..sample_up_to]);
@@ -191,30 +192,7 @@ mod transcriber_tests {
                 .expect("Receiver should not be deallocated.");
         };
 
-        // NOTE: since this new segment callback is extremely expensive, the segment callback
-        // should use some form of early-escape mechanism.
-        // E.g. every 1-3 seconds
-        let mut last = Instant::now();
-        const TIME_LIMIT: u128 = 1000;
-        // The callback is guaranteed to fire at least for the first run.
-        // Subsequent ones should take a little longer.
-
-        let segment_should_run = move || {
-            let now = Instant::now();
-            let diff = now.duration_since(last);
-
-            let should_run = if diff.as_millis() >= TIME_LIMIT {
-                last = now;
-                true
-            } else {
-                false
-            };
-
-            should_run
-        };
-
-        let segment_callback =
-            ShortCircuitRibbleWhisperCallback::new(segment_should_run, segment_closure);
+        let segment_callback = RibbleWhisperCallback::new(segment_closure);
 
         let callbacks = WhisperCallbacks {
             progress: None::<Nop<i32>>,
@@ -233,11 +211,12 @@ mod transcriber_tests {
                 transcriber.process_with_callbacks(run_offline_transcription, callbacks)
             });
             let print_thread = s.spawn(move || {
-                let mut latest_snapshot = TranscriptionSnapshot::default();
+                let mut transcription = String::new();
                 while let Ok(out) = text_receiver.recv() {
-                    latest_snapshot = out;
+                    transcription.push_str(&out);
+                    transcription.push_str(" ");
                 }
-                latest_snapshot.to_string()
+                transcription.trim().to_string()
             });
 
             (transcription_thread.join(), print_thread.join())

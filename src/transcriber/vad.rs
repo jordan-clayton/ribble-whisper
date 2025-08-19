@@ -2,7 +2,6 @@ use parking_lot::Mutex;
 use voice_activity_detector::{IteratorExt, LabeledAudio};
 
 use crate::audio::pcm::PcmS16Convertible;
-use crate::transcriber;
 use crate::utils::errors::RibbleWhisperError;
 
 /// A voice activity detector backend for use with [crate::transcriber::realtime_transcriber::RealtimeTranscriber]
@@ -25,13 +24,10 @@ pub trait Resettable {
 /// and also includes a starting detection probability.
 /// The probability threshold can be swapped after building if needed.
 ///
-/// To mainatain the same flexibility as the underlying supporting library, the sample rates and chunk sizes
-/// are not constrained. Their limitations are as follows:
-/// <https://docs.rs/voice_activity_detector/0.2.0/voice_activity_detector/index.html#standalone-voice-activity-detector>
-/// The provided model is trained using chunk sizes of 256, 512, and 768 samples for an 8kHz sample rate.
-/// It is also trained using chunk sizes of 512, 768, and 1024 for a 16kHz sample rate.
-/// These are not hard-requirements but are recommended for performance.
-/// The only hard requirement is that the sample rate must be no larger than 31.25 times the chunk size.
+/// This uses Silero VAD v5 which operates on fixed-sizes only. An 8kHz sample rate will only allow
+/// 256-sample windows; A 16kHz sample rate will only allow 512-sample windows.
+/// To avoid any truncation/padding which might cause issues for real-time applications,
+/// these are restricted based on the sample rate.
 ///
 /// NOTE: On Windows, this may include some telemetry as per: <https://docs.rs/ort/latest/ort/#strategies>
 /// Self-hosted ONNX runtime binaries have not yet been implemented and may not be.
@@ -39,35 +35,67 @@ pub trait Resettable {
 /// if telemetry is a concern.
 #[derive(Copy, Clone)]
 pub struct SileroBuilder {
-    sample_rate: i64,
-    chunk_size: usize,
+    sample_rate: SileroSampleRate,
     /// Samples with probabilities higher than this threshold are considered to have voice activity.
-    /// More than half of the frames must meet this threshold for the sample to be considered as
-    /// having voice activity.
     detection_probability_threshold: f32,
+    /// Samples with a total voice proportion higher than this threshold are considered to be a
+    /// voiced sample.
+    voiced_proportion_threshold: f32,
+}
+
+// TODO: docstring
+#[derive(Default, Copy, Clone)]
+pub enum SileroSampleRate {
+    R8kHz,
+    #[default]
+    R16kHz,
+}
+
+impl SileroSampleRate {
+    fn vad_sample_rate(&self) -> i64 {
+        (*self).into()
+    }
+
+    fn chunk_size(&self) -> usize {
+        match self {
+            SileroSampleRate::R8kHz => 256,
+            SileroSampleRate::R16kHz => 512,
+        }
+    }
+}
+
+impl From<SileroSampleRate> for i64 {
+    fn from(value: SileroSampleRate) -> Self {
+        match value {
+            SileroSampleRate::R8kHz => 8000,
+            SileroSampleRate::R16kHz => 16000,
+        }
+    }
 }
 
 impl SileroBuilder {
     pub fn new() -> Self {
         Self {
-            sample_rate: 0,
-            chunk_size: 0,
-            detection_probability_threshold: 0.,
+            sample_rate: Default::default(),
+            detection_probability_threshold: 0.0,
+            voiced_proportion_threshold: 0.0,
         }
     }
     /// Set the sample rate.
-    pub fn with_sample_rate(mut self, sample_rate: i64) -> Self {
+    pub fn with_sample_rate(mut self, sample_rate: SileroSampleRate) -> Self {
         self.sample_rate = sample_rate;
         self
     }
-    /// Set the chunks size.
-    pub fn with_chunk_size(mut self, chunk_size: usize) -> Self {
-        self.chunk_size = chunk_size;
-        self
-    }
-    /// Set the detection probability threshold.
+    /// Set the detection probability threshold. Values that exceed this will be considered "voiced."
     pub fn with_detection_probability_threshold(mut self, probability: f32) -> Self {
         self.detection_probability_threshold = probability;
+        self
+    }
+
+    /// Set the voiced proportion threshold. If the proportion of frames is greater than this value,
+    /// the whole sample will be considered "voiced."
+    pub fn with_voiced_proportion_threshold(mut self, voiced_proportion: f32) -> Self {
+        self.voiced_proportion_threshold = voiced_proportion;
         self
     }
 
@@ -77,12 +105,13 @@ impl SileroBuilder {
     /// and that the sample rate is no larger than 31.25 times the chunk size.
     pub fn build(self) -> Result<Silero, RibbleWhisperError> {
         voice_activity_detector::VoiceActivityDetector::builder()
-            .sample_rate(self.sample_rate)
-            .chunk_size(self.chunk_size)
+            .sample_rate(self.sample_rate.vad_sample_rate())
+            .chunk_size(self.sample_rate.chunk_size())
             .build()
             .map(|vad| Silero {
                 vad,
                 detection_probability_threshold: self.detection_probability_threshold,
+                voiced_proportion_threshold: self.voiced_proportion_threshold,
             })
             .map_err(|e| {
                 RibbleWhisperError::ParameterError(format!(
@@ -107,9 +136,10 @@ impl Default for SileroBuilder {
 pub struct Silero {
     vad: voice_activity_detector::VoiceActivityDetector,
     /// Samples with probabilities higher than this threshold are considered to have voice activity.
-    /// More than half of the frames must meet this threshold for the sample to be considered as
-    /// having voice activity.
     detection_probability_threshold: f32,
+    /// If the proportion of voiced frames exceed this threshold value, the sample is considered
+    /// "voiced".
+    voiced_proportion_threshold: f32,
 }
 
 impl Silero {
@@ -121,18 +151,18 @@ impl Silero {
     /// A "Default" whisper-ready Silero configuration for realtime transcription.
     pub fn try_new_whisper_realtime_default() -> Result<Self, RibbleWhisperError> {
         SileroBuilder::new()
-            .with_sample_rate(transcriber::WHISPER_SAMPLE_RATE as i64)
-            .with_chunk_size(DEFAULT_SILERO_CHUNK_SIZE)
-            .with_detection_probability_threshold(SILERO_VOICE_PROBABILITY_THRESHOLD)
+            .with_sample_rate(SileroSampleRate::R16kHz)
+            .with_detection_probability_threshold(REAL_TIME_VOICE_PROBABILITY_THRESHOLD)
+            .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
             .build()
     }
 
     /// A "Default" whisper-ready Silero configuration for offline transcription.
     pub fn try_new_whisper_offline_default() -> Result<Self, RibbleWhisperError> {
         SileroBuilder::new()
-            .with_sample_rate(transcriber::WHISPER_SAMPLE_RATE as i64)
-            .with_chunk_size(DEFAULT_SILERO_CHUNK_SIZE)
+            .with_sample_rate(SileroSampleRate::R16kHz)
             .with_detection_probability_threshold(OFFLINE_VOICE_PROBABILITY_THRESHOLD)
+            .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
             .build()
     }
 }
@@ -182,7 +212,7 @@ impl<T: voice_activity_detector::Sample> VAD<T> for Silero {
         assert_ne!(total_frames, 0);
         // If more than half the frames meet the given threshold, treat the sample as containing speech
         let voiced_proportion = voiced_frames as f32 / total_frames as f32;
-        voiced_proportion > 0.5
+        voiced_proportion > self.voiced_proportion_threshold
     }
     fn extract_voiced_frames(&mut self, samples: &[T]) -> Box<[T]> {
         if samples.is_empty() {
@@ -298,7 +328,7 @@ pub struct WebRtcBuilder {
     sample_rate: WebRtcSampleRate,
     aggressiveness: WebRtcFilterAggressiveness,
     frame_length: WebRtcFrameLengthMillis,
-    detection_probability_threshold: f32,
+    voiced_proportion_threshold: f32,
 }
 
 impl WebRtcBuilder {
@@ -307,7 +337,7 @@ impl WebRtcBuilder {
             sample_rate: WebRtcSampleRate::R8kHz,
             aggressiveness: WebRtcFilterAggressiveness::Quality,
             frame_length: WebRtcFrameLengthMillis::MS10,
-            detection_probability_threshold: 0.0,
+            voiced_proportion_threshold: 0.0,
         }
     }
     /// Sets the sample rate.
@@ -325,8 +355,8 @@ impl WebRtcBuilder {
     }
     /// Sets the detection probability threshold: the proportion of sample frames that must contain
     /// speech for the VAD to conclude a sample contains voice.
-    pub fn with_detection_probability_threshold(mut self, probability_threshold: f32) -> Self {
-        self.detection_probability_threshold = probability_threshold;
+    pub fn with_voiced_proportion_threshold(mut self, probability_threshold: f32) -> Self {
+        self.voiced_proportion_threshold = probability_threshold;
         self
     }
     /// Sets the frame length (in ms).
@@ -350,7 +380,7 @@ impl WebRtcBuilder {
             sample_rate: self.sample_rate,
             aggressiveness: self.aggressiveness,
             frame_length_in_ms: self.frame_length.to_ms(),
-            realtime_detection_probability_threshold: self.detection_probability_threshold,
+            voiced_proportion_threshold: self.voiced_proportion_threshold,
         })
         .map_err(|_| {
             RibbleWhisperError::ParameterError(
@@ -372,7 +402,7 @@ impl WebRtcBuilder {
             vad,
             sample_rate: self.sample_rate.to_sample_rate_hz(),
             frame_length_in_ms: self.frame_length.to_ms(),
-            realtime_detection_probability_threshold: self.detection_probability_threshold,
+            voiced_proportion_threshold: self.voiced_proportion_threshold,
             prediction_predicate: predicate,
         })
     }
@@ -395,13 +425,13 @@ pub struct WebRtc {
     frame_length_in_ms: usize,
     /// The proportion threshold for voiced frames. Samples with proportions of voiced frames higher
     /// than this threshold are assumed to contain voice activity.
-    realtime_detection_probability_threshold: f32,
+    voiced_proportion_threshold: f32,
 }
 
 impl WebRtc {
     /// Sets the realtime detection probability threshold.
-    pub fn with_realtime_detection_probability_threshold(mut self, probability: f32) -> Self {
-        self.realtime_detection_probability_threshold = probability;
+    pub fn with_voiced_proportion_threshold(mut self, proportion: f32) -> Self {
+        self.voiced_proportion_threshold = proportion;
         self
     }
 
@@ -410,7 +440,7 @@ impl WebRtc {
         WebRtcBuilder::new()
             .with_sample_rate(WebRtcSampleRate::R16kHz)
             .with_filter_aggressiveness(WebRtcFilterAggressiveness::LowBitrate)
-            .with_detection_probability_threshold(WEBRTC_VOICE_PROBABILITY_THRESHOLD)
+            .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
             .build_webrtc()
     }
     /// A "Default" whisper-ready WebRtc configuration for offline transcription.
@@ -418,7 +448,7 @@ impl WebRtc {
         WebRtcBuilder::new()
             .with_sample_rate(WebRtcSampleRate::R16kHz)
             .with_filter_aggressiveness(WebRtcFilterAggressiveness::Aggressive)
-            .with_detection_probability_threshold(OFFLINE_VOICE_PROBABILITY_THRESHOLD)
+            .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
             .build_webrtc()
     }
 }
@@ -472,7 +502,7 @@ impl<T: PcmS16Convertible + Copy> VAD<T> for WebRtc {
         // Since WebRtc doesn't allow users to set the "threshold" directly, treat the threshold
         // like a minimum proportion of frames that have to be detected to be considered speech
         let voiced_proportion = (speech_frames.count() as f32) / (total_num_frames as f32);
-        voiced_proportion > self.realtime_detection_probability_threshold
+        voiced_proportion > self.voiced_proportion_threshold
     }
     fn extract_voiced_frames(&mut self, samples: &[T]) -> Box<[T]> {
         if samples.is_empty() {
@@ -511,15 +541,18 @@ pub struct Earshot {
     frame_length_in_ms: usize,
     /// The proportion threshold for voiced frames. Samples with proportions of voiced frames higher
     /// than this threshold are assumed to contain voice activity.
-    realtime_detection_probability_threshold: f32,
+    voiced_proportion_threshold: f32,
     /// Used to statically dispatch the correct method based on the sample rate.
     prediction_predicate: EarshotPredictionFilterPredicate,
 }
 
 impl Earshot {
     /// Sets the realtime detection probability threshold.
-    pub fn with_realtime_detection_probability_threshold(mut self, probability: f32) -> Self {
-        self.realtime_detection_probability_threshold = probability;
+    pub fn with_realtime_detection_probability_threshold(
+        mut self,
+        voiced_proportion_threshold: f32,
+    ) -> Self {
+        self.voiced_proportion_threshold = voiced_proportion_threshold;
         self
     }
 
@@ -528,7 +561,7 @@ impl Earshot {
         WebRtcBuilder::new()
             .with_sample_rate(WebRtcSampleRate::R16kHz)
             .with_filter_aggressiveness(WebRtcFilterAggressiveness::LowBitrate)
-            .with_detection_probability_threshold(WEBRTC_VOICE_PROBABILITY_THRESHOLD)
+            .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
             .build_earshot()
     }
 
@@ -537,7 +570,7 @@ impl Earshot {
         WebRtcBuilder::new()
             .with_sample_rate(WebRtcSampleRate::R16kHz)
             .with_filter_aggressiveness(WebRtcFilterAggressiveness::Aggressive)
-            .with_detection_probability_threshold(OFFLINE_VOICE_PROBABILITY_THRESHOLD)
+            .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
             .build_earshot()
     }
 }
@@ -578,7 +611,7 @@ impl<T: PcmS16Convertible + Copy> VAD<T> for Earshot {
         // like a minimum proportion of frames that have to be detected to be considered speech
 
         let voiced_proportion = (speech_frames.count() as f32) / (total_num_frames as f32);
-        voiced_proportion > self.realtime_detection_probability_threshold
+        voiced_proportion > self.voiced_proportion_threshold
     }
 
     fn extract_voiced_frames(&mut self, samples: &[T]) -> Box<[T]> {
@@ -620,9 +653,8 @@ fn prepare_webrtc_frames<T: PcmS16Convertible + Copy>(
 }
 
 // THESE ARE RECOMMENDATIONS
-// This works best when within the range of 0.65-0.80
+// This works best when within the range of 0.60-0.80
 // Higher thresholds are prone to false negatives.
-pub const SILERO_VOICE_PROBABILITY_THRESHOLD: f32 = 0.60;
-pub const WEBRTC_VOICE_PROBABILITY_THRESHOLD: f32 = 0.65;
-pub const OFFLINE_VOICE_PROBABILITY_THRESHOLD: f32 = 0.75;
-pub const DEFAULT_SILERO_CHUNK_SIZE: usize = 512;
+pub const REAL_TIME_VOICE_PROBABILITY_THRESHOLD: f32 = 0.50;
+pub const DEFAULT_VOICE_PROPORTION_THRESHOLD: f32 = 0.5;
+pub const OFFLINE_VOICE_PROBABILITY_THRESHOLD: f32 = 0.60;

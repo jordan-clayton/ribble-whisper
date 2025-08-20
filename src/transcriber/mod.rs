@@ -1,6 +1,6 @@
 use std::ops::Deref;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use crate::utils::callback::Callback;
 use crate::utils::errors::RibbleWhisperError;
@@ -92,6 +92,10 @@ pub struct RibbleWhisperSegment {
 impl RibbleWhisperSegment {
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    pub fn replace_text(&mut self, new_text: Arc<str>) {
+        self.text = new_text;
     }
 
     pub fn into_text(self) -> Arc<str> {

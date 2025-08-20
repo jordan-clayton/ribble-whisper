@@ -6,7 +6,6 @@ use std::thread::scope;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use parking_lot::Mutex;
-
 #[cfg(feature = "sdl2")]
 use ribble_whisper::audio::audio_backend::default_backend;
 use ribble_whisper::audio::audio_backend::AudioBackend;
@@ -33,6 +32,7 @@ use ribble_whisper::utils::callback::{Nop, RibbleWhisperCallback, StaticRibbleWh
 use ribble_whisper::whisper::configs::WhisperRealtimeConfigs;
 use ribble_whisper::whisper::model;
 use ribble_whisper::whisper::model::{DefaultModelBank, ModelBank, ModelId};
+use strsim::jaro;
 
 fn main() {
     let (model_bank, model_id) = prepare_model_bank();
@@ -48,8 +48,8 @@ fn main() {
 
     let audio_ring_buffer = AudioRingBuffer::<f32>::default();
     // These -might- need to update a little bit more quickly.
-    let (audio_sender, audio_receiver) = utils::get_channel::<Arc<[f32]>>(64);
-    let (text_sender, text_receiver) = utils::get_channel(64);
+    let (audio_sender, audio_receiver) = utils::get_channel::<Arc<[f32]>>(32);
+    let (text_sender, text_receiver) = utils::get_channel(32);
 
     // Note: Any VAD<T> + Send can be used.
     let vad = Silero::try_new_whisper_realtime_default()
@@ -73,17 +73,40 @@ fn main() {
     print!("Would you like to store audio and re-transcribe once realtime has finished? y/n: ");
     stdout().flush().unwrap();
 
-    let mut confirm_re_transcribe = String::new();
+    let mut stdin_buffer = String::new();
 
     let offline_audio_buffer: Arc<Mutex<Option<Vec<f32>>>> = Arc::new(Mutex::new(None));
-    if let Ok(_) = std::io::stdin().read_line(&mut confirm_re_transcribe) {
-        let confirm = confirm_re_transcribe.trim().to_lowercase();
+    let mut recording_audio = false;
+    if let Ok(_) = std::io::stdin().read_line(&mut stdin_buffer) {
+        let confirm = stdin_buffer.trim().to_lowercase();
         if "y" == confirm {
             println!("Confirmed. Recording audio.\n");
+            recording_audio = true;
             let mut guard = offline_audio_buffer.lock();
             *guard = Some(vec![])
         }
     }
+
+    let run_jaro = if recording_audio {
+        stdin_buffer.clear();
+        print!(
+            "Would you like to compare transcription similarity between real-time and offline? y/n: "
+        );
+        stdout().flush().unwrap();
+        if let Ok(_) = std::io::stdin().read_line(&mut stdin_buffer) {
+            let confirm = stdin_buffer.trim().to_lowercase();
+            if "y" == confirm {
+                println!("Confirmed, will compare transcriptions.");
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
 
     let t_offline_audio_buffer = Arc::clone(&offline_audio_buffer);
 
@@ -220,6 +243,9 @@ fn main() {
 
     // Offline audio (re) transcription:
     if let Some(buffer) = offline_audio_buffer.lock().take() {
+        // Take the old (returned) transcription if the user wants to compare.
+        let old_transcription = if run_jaro { Some(transcription) } else { None };
+
         // Use silero to prune out the silence
         let vad = Silero::try_new_whisper_offline_default()
             .expect("Silero expected to build with whisper defaults");
@@ -267,7 +293,16 @@ fn main() {
             eprintln!("{}", e);
             return;
         }
-        println!("{}", &transcription.unwrap());
+
+        let transcription = transcription.unwrap();
+        println!("{}", &transcription);
+
+        if let Some(old_transcription) = old_transcription {
+            println!("Running comparison...");
+            let jaro_similar = jaro(&old_transcription, &transcription);
+            // This may get expensive, so keep to a minimum I suppose?
+            println!("Similarity score (jaro): {jaro_similar}");
+        }
     };
 }
 

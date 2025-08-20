@@ -47,8 +47,9 @@ fn main() {
         .set_flash_attention(true);
 
     let audio_ring_buffer = AudioRingBuffer::<f32>::default();
-    let (audio_sender, audio_receiver) = utils::get_channel::<Arc<[f32]>>(32);
-    let (text_sender, text_receiver) = utils::get_channel(32);
+    // These -might- need to update a little bit more quickly.
+    let (audio_sender, audio_receiver) = utils::get_channel::<Arc<[f32]>>(64);
+    let (text_sender, text_receiver) = utils::get_channel(64);
 
     // Note: Any VAD<T> + Send can be used.
     let vad = Silero::try_new_whisper_realtime_default()
@@ -137,6 +138,7 @@ fn main() {
                         }
                     }
                     Err(_) => {
+                        eprintln!("AUDIO CHANNEL CLOSED");
                         a_thread_run_transcription.store(false, Ordering::Release);
                     }
                 }
@@ -167,7 +169,10 @@ fn main() {
                             latest_control_message = message;
                         }
                     },
-                    Err(_) => p_thread_run_transcription.store(false, Ordering::Release),
+                    Err(_) => {
+                        eprintln!("PRINT CHANNEL CLOSED");
+                        p_thread_run_transcription.store(false, Ordering::Release);
+                    }
                 }
 
                 clear_stdout();

@@ -1,6 +1,6 @@
 use std::ops::Deref;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::utils::callback::Callback;
 use crate::utils::errors::RibbleWhisperError;
@@ -81,9 +81,8 @@ where
 /// Encapsulates a whisper segment with start and end timestamps
 #[derive(Clone)]
 pub struct RibbleWhisperSegment {
-    // TODO: make this Arc<str> to reduce the clone overhead.
     /// Segment text
-    pub text: String,
+    pub text: Arc<str>,
     /// Timestamp start time, measured in centiseconds
     pub start_time: i64,
     /// Timestamp end time, measured in centiseconds
@@ -91,11 +90,11 @@ pub struct RibbleWhisperSegment {
 }
 
 impl RibbleWhisperSegment {
-    pub fn text(&self) -> &String {
+    pub fn text(&self) -> &str {
         &self.text
     }
 
-    pub fn into_text(self) -> String {
+    pub fn into_text(self) -> Arc<str> {
         self.text
     }
     pub fn start_timestamp(&self) -> i64 {
@@ -110,10 +109,12 @@ impl RibbleWhisperSegment {
 impl<'a> From<WhisperSegment<'a>> for RibbleWhisperSegment {
     fn from(value: WhisperSegment) -> Self {
         Self {
-            text: value
-                .to_str_lossy()
-                .expect("This only fails on null pointer. This should not be null pointer")
-                .to_string(),
+            text: Arc::from(
+                value
+                    .to_str_lossy()
+                    .expect("This only fails on null pointer. This should not be null pointer")
+                    .to_string(),
+            ),
             start_time: value.start_timestamp(),
             end_time: value.end_timestamp(),
         }
@@ -123,10 +124,12 @@ impl<'a> From<WhisperSegment<'a>> for RibbleWhisperSegment {
 impl<'a> From<&WhisperSegment<'a>> for RibbleWhisperSegment {
     fn from(value: &WhisperSegment<'a>) -> Self {
         Self {
-            text: value
-                .to_str_lossy()
-                .expect("This only fails on null pointer. This should not be null pointer")
-                .to_string(),
+            text: Arc::from(
+                value
+                    .to_str_lossy()
+                    .expect("This only fails on null pointer. This should not be null pointer")
+                    .to_string(),
+            ),
             start_time: value.start_timestamp(),
             end_time: value.end_timestamp(),
         }
@@ -139,10 +142,10 @@ pub struct TranscriptionSnapshot {
     confirmed: Arc<str>,
     // This should probably be Arc<[Arc<str>]>
     // Otherwise this is going to involve a lot of string clones.
-    string_segments: Arc<[String]>,
+    string_segments: Arc<[Arc<str>]>,
 }
 impl TranscriptionSnapshot {
-    pub fn new(confirmed: Arc<str>, string_segments: Arc<[String]>) -> Self {
+    pub fn new(confirmed: Arc<str>, string_segments: Arc<[Arc<str>]>) -> Self {
         Self {
             confirmed,
             string_segments,
@@ -152,11 +155,11 @@ impl TranscriptionSnapshot {
     pub fn confirmed(&self) -> &str {
         &self.confirmed
     }
-    pub fn string_segments(&self) -> &[String] {
+    pub fn string_segments(&self) -> &[Arc<str>] {
         &self.string_segments
     }
 
-    pub fn into_parts(self) -> (Arc<str>, Arc<[String]>) {
+    pub fn into_parts(self) -> (Arc<str>, Arc<[Arc<str>]>) {
         (self.confirmed, self.string_segments)
     }
     pub fn into_string(self) -> String {

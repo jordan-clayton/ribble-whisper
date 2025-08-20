@@ -332,12 +332,10 @@ where
         // If voice is detected early but there's not enough data to run whisper, this flag should
         // be set to guarantee inference happens after a pause.
         let mut skip_vad_run_inference = false;
+        let mut run_differ = false;
 
         // Set up whisper
-        let full_params = self.configs.to_whisper_full_params();
-
-        // TODO: TESTING THIS OUT -> THIS MIGHT WORK BETTER IF THE SEGMENTS ARE CHOPPED DOWN
-        // JARO-WINKLER GETS EXPENSIVE.
+        let mut full_params = self.configs.to_whisper_full_params();
 
         let whisper_context_params = self.configs.to_whisper_context_params();
 
@@ -382,7 +380,13 @@ where
         #[cfg(debug_assertions)]
         let mut max_working_set_size = 0usize;
 
-        let mut previous_pause = false;
+        let mut previous_pause_clear_buffer = false;
+
+        #[cfg(debug_assertions)]
+        let mut num_differ_runs = 0usize;
+
+        // This actually seems to be helpful for resolving things across word boundaries, ONLY after a clear.
+        let mut use_context = false;
 
         while run_transcription.load(Ordering::Acquire) {
             let t_now = Instant::now();
@@ -445,7 +449,7 @@ where
 
                     // This means inference has been run at least 1 last time and the dedup has run
                     // I think I might be baking this incorrectly.
-                    if previous_pause {
+                    if previous_pause_clear_buffer {
                         self.send_control_phrase(WhisperControlPhrase::Debug(
                             "CLEARING BUFFER".to_string(),
                         ));
@@ -469,17 +473,18 @@ where
                         self.audio_feed.clear();
                         self.send_snapshot(Arc::clone(&output_string), &working_set);
                         push_snapshot = false;
+                        use_context = true;
                         continue;
                     }
-                    previous_pause = true;
+                    previous_pause_clear_buffer = true;
                     true
                 } else {
-                    previous_pause = false;
+                    previous_pause_clear_buffer = false;
                     false
                 }
             } else {
                 // If the inference needs to be run, avoid early-clearing the buffer.
-                previous_pause = false;
+                previous_pause_clear_buffer = false;
                 false
             };
 
@@ -515,7 +520,11 @@ where
             };
             self.send_control_phrase(WhisperControlPhrase::Debug(inference_msg.to_string()));
 
-            let _ = whisper_state.full(full_params.clone(), &audio_samples)?;
+            // TESTING THIS OUT A MIN
+            let mut params = full_params.clone();
+            params.set_no_context(!use_context);
+
+            let _ = whisper_state.full(params, &audio_samples)?;
             let num_segments = whisper_state.full_n_segments();
 
             #[cfg(debug_assertions)]
@@ -549,39 +558,44 @@ where
                 res
             });
 
-            // let run_differ =
-            //     self.audio_feed.get_audio_length_ms() > self.audio_feed.get_capacity_in_ms();
-            //
-            // if !run_differ {
-            //     working_set.clear();
-            //     working_set.extend(segments);
-            // } else {
-            //     self.send_control_phrase(WhisperControlPhrase::Debug("RUNNING DEDUP".to_string()));
-            // }
+            // POSSIBLY run a clear before the last diff.
+            if !run_differ {
+                use_context = false;
+                run_differ =
+                    self.audio_feed.get_audio_length_ms() >= self.audio_feed.get_capacity_in_ms();
 
-            if working_set.is_empty() {
-                working_set.extend(segments);
+                // If the differ should be run on the next pass, clear the audio, push the entire audio buffer to the working set,
+                // And expect the differ to run on the next pass.
+                if run_differ {
+                    self.audio_feed.clear();
+                    working_set.clear();
+                    working_set.extend(segments);
+                    use_context = true;
+                } else {
+                    working_set.clear();
+                    working_set.extend(segments);
+                }
+
                 push_snapshot = true;
-            }
-            // Otherwise, run the diffing algorithm
-            // This is admittedly a little haphazard, but it seems good enough and can tolerate
-            // long sentences reasonably well. It is likely that a phrase will finish and get detected
-            // by the VAD well before issues are encountered.
-            // There are small chances of false negatives (duplicated output), and false positives (clobbering)
-            // These tend to happen with abnormal speech patterns (extra long sentence length), strange prosody, and the like.
+            } else {
+                #[cfg(debug_assertions)]
+                {
+                    num_differ_runs += 1;
+                }
 
-            // In the worst cases, the entire working set can decay, but it is rare and very difficult to trigger
-            // because of how whisper works.
-            else {
-                // Perhaps this is taking a lot longer than I'm expecting.
+                // This is taking a very, very long time; the continuous deduping is not a great solution for what I'm trying to achieve.
+                // PERHAPS THIS SHOULD WORK ON THE LAST (~1-5) N N-GRAMS.
+                // I THINK THIS REALLY, REALLY SHOULD BE OPERATING ON N-GRAMS.
                 self.send_control_phrase(WhisperControlPhrase::Debug("RUNNING DEDUP".to_string()));
 
-                // Run a diff over the last N_SEGMENTS of the working set and the new segments and try
-                // to resolve overlap.
+                // let last_segment = working_set.iter_mut().last();
+                // if let Some(last_seg) = last_segment {}
+
                 let old_segments = working_set.make_contiguous();
                 // Get the tail N_SEGMENTS
                 let old_len = old_segments.len();
                 let tail = old_segments[old_len.saturating_sub(N_SEGMENTS_DIFF)..].iter_mut();
+                let mut tail_len = 0;
 
                 let mut head: Vec<RibbleWhisperSegment> = Vec::with_capacity(N_SEGMENTS_DIFF);
 
@@ -599,6 +613,8 @@ where
                 // This is Amortized O(1), with an upper bound of constants::N_SEGMENTS_DIFF * constants::N_SEGMENTS_DIFF iterations
                 // In practice this is very unlikely to hit that upper bound.
                 for old_segment in tail {
+                    // This has to be accumulated - otherwise the iterator gets consumed to count it.
+                    tail_len += 1;
                     // This might be a little conservative, but it's better to be safe.
                     // It is expected that if there is a good match, it's 1:1 on each of the timestamps
                     let mut best_score = 0.0;
@@ -700,11 +716,30 @@ where
                     }
                 }
 
-                let old_len = working_set.len();
+                // Bake the tail into the confirmed string
+                let confirmed_text = working_set
+                    .drain(..tail_len)
+                    .map(|seg| seg.into_text())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let new_text = if output_string.trim().is_empty() {
+                    confirmed_text
+                } else {
+                    format!("{output_string} {confirmed_text}")
+                };
+
+                output_string = Arc::from(new_text.trim());
+
                 // If there are any remaining segments, drain them into the working set.
+                // UH, this is more than likely to get overwritten.
                 working_set.extend(segments);
-                let new_len = working_set.len();
-                push_snapshot |= old_len != new_len;
+
+                push_snapshot = true;
+                run_differ = false;
+
+                // Once the differ has been run, don't use previous context to inform the transcription.
+                // The sliding window is going to continue transcribing over a ~10-20 ms buffer and it's likely to.
+                use_context = false;
             }
 
             #[cfg(debug_assertions)]
@@ -816,11 +851,11 @@ pub const TIMESTAMP_EPSILON: i64 = 10;
 // IF THAT'S THE CASE, DON'T RUN IT OVER A WORKING SET SIZE OF 3
 // FOR RESOLVING WORD BOUNDARIES, IT SHOULD PROBABLY BE THE LAST SEGMENT OR SO ANYWAY...?
 
-// PERHAPS IT IS MOST WISE TO RUN DEDUPING ONLY AFTER THE AUDIO BUFFER IS FULL and resolve things at the token level.
+pub const N_TOKENS: usize = 5;
 pub const N_SEGMENTS_DIFF: usize = 3;
 pub const WORKING_SET_SIZE: usize = N_SEGMENTS_DIFF * 5;
 pub const PAUSE_DURATION: u64 = 100;
 pub const N_SAMPLES_30S: usize = ((1e-3 * 30000.0) * WHISPER_SAMPLE_RATE) as usize;
 
-const VAD_TIMEOUT_MS: u128 = 2000;
+const VAD_TIMEOUT_MS: u128 = 1500;
 const AUDIO_MIN_LEN: usize = WHISPER_SAMPLE_RATE as usize;

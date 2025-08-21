@@ -282,7 +282,6 @@ where
     }
 }
 
-// TODO: clean up extraneous variables used for debugger watching (or possibly move to a separate branch)
 impl<V, M> Transcriber for RealtimeTranscriber<V, M>
 where
     V: VAD<f32>,
@@ -691,6 +690,9 @@ where
                         }
 
                         old_text.truncate(old_start + 1);
+
+                        let copy_over = new_text.iter().skip(new_idx + 1).take(num_words);
+                        old_text.extend(copy_over);
                         last_seg.replace_text(Arc::from(old_text.join(" ").trim()));
 
                         self.audio_feed.clear_n_samples(CLEAR_MS * num_words);
@@ -851,7 +853,7 @@ pub const PAUSE_DURATION: u64 = 100;
 // Since it's not known whether/where a word might get chopped off, this is a conservative guess
 // that hopefully will move the audio tail to a pause/to a point where whisper can't resolve it
 // after using context to confirm the transcription on a dedup pass.
-const CLEAR_MS: usize = 50;
+const CLEAR_MS: usize = 25;
 pub const N_SAMPLES_30S: usize = ((1e-3 * 30000.0) * WHISPER_SAMPLE_RATE) as usize;
 const VAD_TIMEOUT_MS: u128 = 1500;
 const AUDIO_MIN_LEN: usize = WHISPER_SAMPLE_RATE as usize;

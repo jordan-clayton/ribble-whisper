@@ -1,7 +1,5 @@
 [package]
 name = "ribble_whisper"
-# TODO: if there are genuinely breaking changes, bump this to 0.2?
-# Since this really isn't "done" yet as a library, it probably doesn't matter too much.
 version = "0.2.0"
 edition = "2024"
 description = "High-level wrapper around whisper-rs features with support for realtime transcription; designed for use in GUI and TUI applications."

@@ -283,8 +283,6 @@ where
 }
 
 // TODO: clean up extraneous variables used for debugger watching (or possibly move to a separate branch)
-// TODO: Gate DEBUG messages behind debug mode; release mode should not get debug messages.
-// TODO: MOVE VAD_GAIN to a parameter in the realtime_settings -> min is 1.0, max should be implementation dependent, 10 is a good maximum.
 impl<V, M> Transcriber for RealtimeTranscriber<V, M>
 where
     V: VAD<f32>,
@@ -327,9 +325,6 @@ where
         let mut output_string: Arc<str> = Default::default();
         let mut working_set: VecDeque<RibbleWhisperSegment> =
             VecDeque::with_capacity(WORKING_SET_SIZE);
-
-        // TODO: determine whether this could probably just be a local variable within the loop.
-        let mut push_snapshot = false;
 
         // If voice is detected early but there's not enough data to run whisper, this flag should
         // be set to guarantee inference happens after a pause.
@@ -408,19 +403,6 @@ where
             }
 
             let pause_detected = if !skip_vad_run_inference {
-                // Check for voice activity
-                // In case the audio needs to be cleared, record the amount of time for VAD + lock
-                // contention, so that audio isn't fully lost.
-
-                // Apply a small amount of gain + re-normalize to bump the signal in case the audio
-                // sensitivity is low.
-                audio_samples
-                    .iter_mut()
-                    .for_each(|f| *f = (*f * VAD_GAIN).clamp(-1.0, 1.0));
-
-                let vad_max = audio_samples.iter().copied().fold(1.0f32, f32::max);
-                audio_samples.iter_mut().for_each(|f| *f = (*f) / vad_max);
-
                 let voice_detected = self.vad.lock().voice_detected(&audio_samples);
                 if !voice_detected {
                     let vad_t_now = Instant::now();
@@ -436,23 +418,32 @@ where
 
                     if vad_t_now.duration_since(timeout_start_instant).as_millis() < VAD_TIMEOUT_MS
                     {
-                        self.send_control_phrase(WhisperControlPhrase::Debug(
-                            "PAUSE TIMEOUT TICKING".to_string(),
-                        ));
+                        #[cfg(debug_assertions)]
+                        {
+                            self.send_control_phrase(WhisperControlPhrase::Debug(
+                                "PAUSE TIMEOUT TICKING".to_string(),
+                            ));
+                        }
                         // Run the VAD check again to test for silence.
                         continue;
                     }
 
-                    self.send_control_phrase(WhisperControlPhrase::Debug(
-                        "PAUSE DETECTED".to_string(),
-                    ));
+                    #[cfg(debug_assertions)]
+                    {
+                        self.send_control_phrase(WhisperControlPhrase::Debug(
+                            "PAUSE DETECTED".to_string(),
+                        ));
+                    }
 
                     // This means inference has been run at least 1 last time and the dedup has run
                     // I think I might be baking this incorrectly.
                     if previous_pause_clear_buffer {
-                        self.send_control_phrase(WhisperControlPhrase::Debug(
-                            "CLEARING BUFFER".to_string(),
-                        ));
+                        #[cfg(debug_assertions)]
+                        {
+                            self.send_control_phrase(WhisperControlPhrase::Debug(
+                                "CLEARING BUFFER".to_string(),
+                            ));
+                        }
 
                         // This -should- bake the working set here.
                         // If the audio is cleared, the previous output might accidentally be
@@ -472,7 +463,6 @@ where
                         output_string = Arc::from(next_out.trim());
                         self.audio_feed.clear();
                         self.send_snapshot(Arc::clone(&output_string), &working_set);
-                        push_snapshot = false;
 
                         // Use context to inform the next transcription
                         use_context = true;
@@ -508,13 +498,17 @@ where
                 continue;
             }
 
-            // DEBUGGING -> just ignore these in the print loop if undesired.
-            let inference_msg = if pause_detected {
-                "INFERENCE AFTER PAUSE"
-            } else {
-                "RUNNING INFERENCE"
-            };
-            self.send_control_phrase(WhisperControlPhrase::Debug(inference_msg.to_string()));
+            #[cfg(debug_assertions)]
+            {
+                // DEBUGGING -> just ignore these in the print loop if undesired.
+                let inference_msg = if pause_detected {
+                    "INFERENCE AFTER PAUSE"
+                } else {
+                    "RUNNING INFERENCE"
+                };
+
+                self.send_control_phrase(WhisperControlPhrase::Debug(inference_msg.to_string()));
+            }
 
             // TESTING THIS OUT A MIN
             let mut params = full_params.clone();
@@ -529,9 +523,16 @@ where
             }
 
             if num_segments == 0 {
-                self.send_control_phrase(WhisperControlPhrase::Debug("NO SEGMENTS".to_string()));
-                // Sleep for a little bit to give the buffer time to fill up
-                // Or maybe don't...
+                #[cfg(debug_assertions)]
+                {
+                    self.send_control_phrase(WhisperControlPhrase::Debug(
+                        "NO SEGMENTS".to_string(),
+                    ));
+                }
+
+                // TODO: determine whether or not this should sleep -> This branch is unlikely to
+                // be taken in most cases.
+                // It is difficult to trigger in practice.
                 sleep(Duration::from_millis(PAUSE_DURATION));
                 continue;
             }
@@ -571,19 +572,29 @@ where
                     working_set.clear();
                     working_set.extend(segments);
                 }
-
-                push_snapshot = true;
             } else {
+                // This is a best-effort de-dup that examines the last n<=5 tokens (words) of the
+                // currently last segment, and the first m<=5 tokens (words) of the first new segment.
+                // A quadratic search + jaro_winkler is used to fuzzy match the closest overlap
+                // (~.90). If there is an overlap, take the next w<= 2 words, append it to the old
+                // text and clear ms <= w * CLEAR_MS from the audio buffer to re-start the window.
+                //
+                // This seems to be generally enough to chop out the newly appended boundary words
+                // so that whisper remains coherent.
+                //
+                // This seems generally "good enough" to resolve boundaries. It might be improved
+                // with continuous timestamping, or with additional improvements to the algorithm thus far.
                 #[cfg(debug_assertions)]
                 {
                     num_differ_runs += 1;
                 }
 
-                // This is taking a very, very long time; the continuous deduping is not a great solution for what I'm trying to achieve.
-
-                // The new implementation isn't necessarily all that much better with all the allocations,
-                // but perhaps it is sufficient and speedy-enough.
-                self.send_control_phrase(WhisperControlPhrase::Debug("RUNNING DEDUP".to_string()));
+                #[cfg(debug_assertions)]
+                {
+                    self.send_control_phrase(WhisperControlPhrase::Debug(
+                        "RUNNING DEDUP".to_string(),
+                    ));
+                }
 
                 let last_segment = working_set.iter_mut().last();
                 let first_new_segment = segments.next();
@@ -607,13 +618,12 @@ where
                     // prefix by strings of size 2+
                     // It might also be wise to reconsider the indexing business if doing so.
                     // A prefix of 2 strings is most likely going to be more accurate.
+                    //
+                    //enumerate(): `(idx, <item>)`, `old_text.iter().enumerate().skip(old_start)`
 
-                    for idx in old_start..old_text.len() {
+                    for (idx, token) in old_text.iter().enumerate().skip(old_start) {
                         let mut max_score = 0.0;
-                        for jdx in 0..new_end {
-                            let token = old_text[idx];
-                            let new_token = new_text[jdx];
-
+                        for (jdx, new_token) in new_text.iter().enumerate().take(new_end) {
                             // I'm -not- quite sure whether this could really optimize for the "first"
                             // without false positives.
                             let similar = jaro_winkler(token, new_token);
@@ -671,7 +681,6 @@ where
                 // the remaining segments need to be in the working set.
                 working_set.extend(segments);
 
-                push_snapshot = true;
                 run_differ = false;
 
                 // Once the differ has been run, don't use previous context to inform the transcription.
@@ -692,9 +701,12 @@ where
             // It is most likely that the working set will get drained beforehand, but this is a
             // fallback to ensure the working_set is always WORKING_SET_SIZE
             if working_set.len() > WORKING_SET_SIZE {
-                self.send_control_phrase(WhisperControlPhrase::Debug(
-                    "BAKING_WORKING_SET".to_string(),
-                ));
+                #[cfg(debug_assertions)]
+                {
+                    self.send_control_phrase(WhisperControlPhrase::Debug(
+                        "BAKING_WORKING_SET".to_string(),
+                    ));
+                }
 
                 #[cfg(debug_assertions)]
                 {
@@ -714,13 +726,17 @@ where
                 };
 
                 output_string = Arc::from(next_out.trim());
-                push_snapshot = true;
             }
 
-            // Send the current transcription as it exists, so that the UI can update
+            // Send the current transcription as it exists, so that the UI can update.
+            // Since the working set is updated after every run of the inference/differ/buffer
+            //
+            // clear, and there are earlier skips to avoid running inference, it can generally be
+            // assumed that each inference = needs snapshot
+            let push_snapshot = !(output_string.trim().is_empty() && working_set.is_empty());
+
             if push_snapshot {
                 self.send_snapshot(Arc::clone(&output_string), &working_set);
-                push_snapshot = false;
             }
 
             // If the timeout is set to 0, this loop runs infinitely.
@@ -800,13 +816,5 @@ pub const PAUSE_DURATION: u64 = 100;
 // get a "reasonably natural" stream.
 const CLEAR_MS: usize = 100;
 pub const N_SAMPLES_30S: usize = ((1e-3 * 30000.0) * WHISPER_SAMPLE_RATE) as usize;
-
 const VAD_TIMEOUT_MS: u128 = 1500;
 const AUDIO_MIN_LEN: usize = WHISPER_SAMPLE_RATE as usize;
-
-// Since low-volume can somewhat cause issues with the VAD, apply a small amount of gain to try and
-// get it to pick up a signal.
-
-// TODO: move this over to configs, should be somewhere between 1.0 and 10.0 ->
-// it should be tweakable based on the microphone sensitivity
-const VAD_GAIN: f32 = 10.0;

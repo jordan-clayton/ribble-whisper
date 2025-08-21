@@ -1,3 +1,4 @@
+use std::env;
 use std::io::{stdout, Write};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +36,21 @@ use ribble_whisper::whisper::model::{DefaultModelBank, ModelBank, ModelId};
 use strsim::jaro;
 
 fn main() {
+    let mut args = env::args().skip(1);
+    let mut gain: Option<f32> = None;
+
+    while let Some(arg) = args.next() {
+        match &arg[..] {
+            "-g" => {
+                gain = args.next().and_then(|num| num.parse().ok());
+            }
+            _ => break,
+        }
+    }
+
+    // Add a 20dB gain to the stream in case audio is a little low.
+    let audio_gain = gain.unwrap_or(10.0).max(1.0);
+
     let (model_bank, model_id) = prepare_model_bank();
     let model_bank = Arc::new(model_bank);
     // Set the number of threads according to your hardware.
@@ -133,6 +149,8 @@ fn main() {
         .open_capture(spec, sink)
         .expect("Audio capture expected to open without issue");
 
+    let gain_buffer_size = mic.buffer_size();
+
     let transcriber_thread = scope(|s| {
         let a_thread_run_transcription = Arc::clone(&run_transcription);
         let t_thread_run_transcription = Arc::clone(&run_transcription);
@@ -146,6 +164,8 @@ fn main() {
             // Just hog the mutex because there's only one writer.
             let mut offline_buffer = t_offline_audio_buffer.lock();
             while a_thread_run_transcription.load(Ordering::Acquire) {
+                let mut highest_peak = 1.0;
+                let mut gain_audio = Vec::with_capacity(gain_buffer_size);
                 match audio_receiver.recv() {
                     Ok(audio_data) => {
                         // If the transcriber is not yet loaded, just consume the audio
@@ -155,7 +175,21 @@ fn main() {
 
                         // Otherwise, fan out to the ring-buffer (for transcrption) and the optional
                         // offline buffer
-                        audio_ring_buffer.push_audio(&audio_data);
+                        //
+                        // Add a small amount of gain and normalize to a rolling max peak
+                        gain_audio.clear();
+                        gain_audio.extend(audio_data.iter().copied().map(|f| f * audio_gain));
+
+                        // Update the highest peak
+                        highest_peak = gain_audio
+                            .iter()
+                            .copied()
+                            .fold(highest_peak, |acc, f| f32::max(acc, f.abs()).max(1.0));
+
+                        // Normalize the audio, then push to the ring-buffer
+                        gain_audio.iter_mut().for_each(|f| *f /= highest_peak);
+
+                        audio_ring_buffer.push_audio(&gain_audio);
                         if let Some(buffer) = offline_buffer.as_mut() {
                             buffer.extend_from_slice(&audio_data);
                         }
@@ -242,7 +276,17 @@ fn main() {
     println!("{}", &transcription);
 
     // Offline audio (re) transcription:
-    if let Some(buffer) = offline_audio_buffer.lock().take() {
+    if let Some(mut buffer) = offline_audio_buffer.lock().take() {
+        // Run a small amount of gain on the buffer and normalize to the max(highest_peak, 0dB)
+        let highest_peak = buffer
+            .iter()
+            .fold(1.0, |acc, f| f32::max(acc, f.abs()).max(1.0))
+            * audio_gain;
+
+        buffer
+            .iter_mut()
+            .for_each(|f| *f *= audio_gain / highest_peak);
+
         // Take the old (returned) transcription if the user wants to compare.
         let old_transcription = if run_jaro { Some(transcription) } else { None };
 

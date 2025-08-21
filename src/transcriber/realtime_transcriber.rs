@@ -282,7 +282,6 @@ where
     }
 }
 
-// TODO: clean up extraneous variables used for debugger watching (or possibly move to a separate branch)
 impl<V, M> Transcriber for RealtimeTranscriber<V, M>
 where
     V: VAD<f32>,
@@ -350,26 +349,7 @@ where
         self.ready.store(true, Ordering::Release);
         self.send_control_phrase(WhisperControlPhrase::StartSpeaking);
 
-        // TODO: clean these up and get rid of them before merge.
-        #[cfg(debug_assertions)]
-        let mut dedup_swaps = 0usize;
-
-        #[cfg(debug_assertions)]
-        let mut working_set_exceeded = 0usize;
-
-        #[cfg(debug_assertions)]
-        let mut max_num_segments = 0usize;
-
-        #[cfg(debug_assertions)]
-        let mut max_num_words = 0usize;
-
-        #[cfg(debug_assertions)]
-        let mut max_working_set_size = 0usize;
-
         let mut previous_pause_clear_buffer = false;
-
-        #[cfg(debug_assertions)]
-        let mut num_differ_runs = 0usize;
 
         // This actually seems to be helpful for resolving things across word boundaries, ONLY after a clear.
         let mut use_context = false;
@@ -421,32 +401,23 @@ where
 
                     if vad_t_now.duration_since(timeout_start_instant).as_millis() < VAD_TIMEOUT_MS
                     {
-                        #[cfg(debug_assertions)]
-                        {
-                            self.send_control_phrase(WhisperControlPhrase::Debug(
-                                "PAUSE TIMEOUT TICKING".to_string(),
-                            ));
-                        }
+                        self.send_control_phrase(WhisperControlPhrase::Debug(
+                            "PAUSE TIMEOUT TICKING".to_string(),
+                        ));
                         // Run the VAD check again to test for silence.
                         continue;
                     }
 
-                    #[cfg(debug_assertions)]
-                    {
-                        self.send_control_phrase(WhisperControlPhrase::Debug(
-                            "PAUSE DETECTED".to_string(),
-                        ));
-                    }
+                    self.send_control_phrase(WhisperControlPhrase::Debug(
+                        "PAUSE DETECTED".to_string(),
+                    ));
 
                     // This means inference has been run at least 1 last time and the dedup has run
                     // I think I might be baking this incorrectly.
                     if previous_pause_clear_buffer {
-                        #[cfg(debug_assertions)]
-                        {
-                            self.send_control_phrase(WhisperControlPhrase::Debug(
-                                "CLEARING BUFFER".to_string(),
-                            ));
-                        }
+                        self.send_control_phrase(WhisperControlPhrase::Debug(
+                            "CLEARING BUFFER".to_string(),
+                        ));
 
                         // This -should- bake the working set here.
                         // If the audio is cleared, the previous output might accidentally be
@@ -504,17 +475,14 @@ where
                 continue;
             }
 
-            #[cfg(debug_assertions)]
-            {
-                // DEBUGGING -> just ignore these in the print loop if undesired.
-                let inference_msg = if pause_detected {
-                    "INFERENCE AFTER PAUSE"
-                } else {
-                    "RUNNING INFERENCE"
-                };
+            // DEBUGGING -> just ignore these in the print loop if undesired.
+            let inference_msg = if pause_detected {
+                "INFERENCE AFTER PAUSE"
+            } else {
+                "RUNNING INFERENCE"
+            };
 
-                self.send_control_phrase(WhisperControlPhrase::Debug(inference_msg.to_string()));
-            }
+            self.send_control_phrase(WhisperControlPhrase::Debug(inference_msg.to_string()));
 
             let mut params = full_params.clone();
             params.set_no_context(!use_context);
@@ -522,18 +490,8 @@ where
             let _ = whisper_state.full(params, &audio_samples)?;
             let num_segments = whisper_state.full_n_segments();
 
-            #[cfg(debug_assertions)]
-            {
-                max_num_segments = max_num_segments.max(num_segments as usize);
-            }
-
             if num_segments == 0 {
-                #[cfg(debug_assertions)]
-                {
-                    self.send_control_phrase(WhisperControlPhrase::Debug(
-                        "NO SEGMENTS".to_string(),
-                    ));
-                }
+                self.send_control_phrase(WhisperControlPhrase::Debug("NO SEGMENTS".to_string()));
 
                 // TODO: determine whether or not this should sleep -> This branch is unlikely to
                 // be taken in most cases.
@@ -596,17 +554,8 @@ where
                 //
                 // This seems generally "good enough" to resolve boundaries. It might be improved
                 // with continuous timestamping, or with additional improvements to the algorithm thus far.
-                #[cfg(debug_assertions)]
-                {
-                    num_differ_runs += 1;
-                }
 
-                #[cfg(debug_assertions)]
-                {
-                    self.send_control_phrase(WhisperControlPhrase::Debug(
-                        "RUNNING DEDUP".to_string(),
-                    ));
-                }
+                self.send_control_phrase(WhisperControlPhrase::Debug("RUNNING DEDUP".to_string()));
 
                 let last_segment = working_set.iter_mut().last();
                 let first_new_segment = segments.next();
@@ -653,11 +602,6 @@ where
                     if let Some(swap_idx) = old_boundary
                         && let Some(new_idx) = new_boundary
                     {
-                        #[cfg(debug_assertions)]
-                        {
-                            dedup_swaps += 1;
-                        }
-
                         // Find out where to start copying and where to end
                         let mut old_start = swap_idx;
                         let mut new_start = new_idx;
@@ -685,12 +629,11 @@ where
                         // The goal is to "confirm" audio on the left half, and count the word distance
                         // from the right half (new), and clear the remaining overage.
                         let num_words = new_start.saturating_sub(new_idx);
-                        #[cfg(debug_assertions)]
-                        {
-                            max_num_words = max_num_words.max(num_words);
-                        }
 
                         old_text.truncate(old_start + 1);
+                        let copy_over = new_text.iter().skip(new_idx + 1).take(num_words);
+                        old_text.extend(copy_over);
+
                         last_seg.replace_text(Arc::from(old_text.join(" ").trim()));
 
                         self.audio_feed.clear_n_samples(CLEAR_MS * num_words);
@@ -725,11 +668,6 @@ where
                 use_context = false;
             }
 
-            #[cfg(debug_assertions)]
-            {
-                max_working_set_size = max_working_set_size.max(working_set.len());
-            }
-
             // Drain the working set when it exceeds its bounded size. It is most likely that the
             // n segments drained are actually part of the transcription.
             // It is highly, highly unlikely for this condition to ever trigger, given that VAD are
@@ -737,17 +675,9 @@ where
             // It is most likely that the working set will get drained beforehand, but this is a
             // fallback to ensure the working_set is always WORKING_SET_SIZE
             if working_set.len() > WORKING_SET_SIZE {
-                #[cfg(debug_assertions)]
-                {
-                    self.send_control_phrase(WhisperControlPhrase::Debug(
-                        "BAKING_WORKING_SET".to_string(),
-                    ));
-                }
-
-                #[cfg(debug_assertions)]
-                {
-                    working_set_exceeded += 1;
-                }
+                self.send_control_phrase(WhisperControlPhrase::Debug(
+                    "BAKING_WORKING_SET".to_string(),
+                ));
 
                 let next_text = working_set
                     .drain(0..working_set.len().saturating_sub(WORKING_SET_SIZE))
@@ -805,13 +735,6 @@ where
         // Set internal state to non-ready in case the transcriber is going to be reused
         self.ready.store(false, Ordering::Release);
 
-        // TODO: remove this once the diffing has been sorted out
-
-        #[cfg(debug_assertions)]
-        {
-            eprintln!("BREAKPOINT TO LOOK AT TALLY VALUES.");
-        }
-
         // Strip remaining whitespace and return
         Ok(final_out.trim().to_string())
     }
@@ -851,7 +774,9 @@ pub const PAUSE_DURATION: u64 = 100;
 // Since it's not known whether/where a word might get chopped off, this is a conservative guess
 // that hopefully will move the audio tail to a pause/to a point where whisper can't resolve it
 // after using context to confirm the transcription on a dedup pass.
-const CLEAR_MS: usize = 50;
+
+// NOTE: this might need to be tweaked in release mode - test and see.
+const CLEAR_MS: usize = 25;
 pub const N_SAMPLES_30S: usize = ((1e-3 * 30000.0) * WHISPER_SAMPLE_RATE) as usize;
 const VAD_TIMEOUT_MS: u128 = 1500;
 const AUDIO_MIN_LEN: usize = WHISPER_SAMPLE_RATE as usize;

@@ -14,8 +14,9 @@ your results may vary.
 ***
 NOTE: This library is primarily intended for personal and research use, but is actively used
 in [Ribble](https://github.com/jordan-clayton/ribble) and has proven stable in that context.
-While it has not been tested in large-scale deployments, it is likely suitable for general use--though this is not
-guaranteed.
+It has not been tested in large-scale deployments, but it might be suitable for general use--I cannot make any
+guarantees
+about accuracy, performance, and feasibility.
 ***
 
 ## External Dependencies
@@ -25,7 +26,7 @@ guaranteed.
 
 ## Audio Backends
 
-By default this crate uses SDL2 to handle audio, but other backends can be used by implementing `AudioBackend`. Since
+By default, this crate uses SDL2 to handle audio, but other backends can be used by implementing `AudioBackend`. Since
 SDL2 and related subsystems are not thread-safe (but devices are), it is up to the user to handle ownership and uphold
 SDL2 invariants in the application. For an example of how to do this,
 see: [Ribble](https://github.com/jordan-clayton/ribble).

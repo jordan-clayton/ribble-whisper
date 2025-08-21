@@ -263,26 +263,25 @@ impl<T: Copy + Clone + Default> AudioRingBuffer<T> {
         self.inner.audio_len.store(n_samples, Ordering::Release);
     }
 
-    /// Clears the requested amount of audio data from the back of the buffer,
-    /// minus a small amount of audio that can be used to try to resolve word boundaries.
+    /// Clears the requested amount of audio data from the **back** of the buffer.
+    /// If you want to retain a small amount of data, you will need to manually calculate the
+    /// correct length in milliseconds to clear.
     pub fn clear_n_samples(&self, len_ms: usize) {
+        if len_ms == 0 {
+            return;
+        }
         // Guard state by hogging the mutex to prevent data inconsistencies
         let _buffer = self.inner.buffer.lock();
-        let mut ms = len_ms;
-        if ms == 0 {
-            let this_ms = self.inner.capacity_ms.load(Ordering::Acquire);
-            ms = this_ms;
-        }
 
         let sample_rate = self.inner.sample_rate.load(Ordering::Acquire);
-        let mut n_samples = (ms as f64 * sample_rate as f64 / 1000f64) as usize;
+        let mut n_samples = (len_ms as f64 * sample_rate as f64 / 1000f64) as usize;
 
         let audio_len = self.inner.audio_len.load(Ordering::Acquire);
         if n_samples > audio_len {
             n_samples = audio_len;
         }
 
-        let new_len = audio_len - n_samples + N_SAMPLES_KEEP;
+        let new_len = audio_len - n_samples;
         self.inner.audio_len.store(new_len, Ordering::Release);
     }
 }

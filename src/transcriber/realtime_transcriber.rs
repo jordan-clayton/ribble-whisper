@@ -361,6 +361,9 @@ where
         let mut max_num_segments = 0usize;
 
         #[cfg(debug_assertions)]
+        let mut max_num_words = 0usize;
+
+        #[cfg(debug_assertions)]
         let mut max_working_set_size = 0usize;
 
         let mut previous_pause_clear_buffer = false;
@@ -463,9 +466,12 @@ where
                         output_string = Arc::from(next_out.trim());
                         self.audio_feed.clear();
                         self.send_snapshot(Arc::clone(&output_string), &working_set);
-
                         // Use context to inform the next transcription
+                        // MAYBE? I'm not really all that sure that this should be the case.
+                        // Tbh, not sold on context at all.
                         use_context = true;
+
+                        run_differ = false;
                         // RESET the VAD timeout so it doesn't get stuck in a clearing loop.
                         vad_timeout_start_instant = None;
                         continue;
@@ -510,7 +516,6 @@ where
                 self.send_control_phrase(WhisperControlPhrase::Debug(inference_msg.to_string()));
             }
 
-            // TESTING THIS OUT A MIN
             let mut params = full_params.clone();
             params.set_no_context(!use_context);
 
@@ -558,12 +563,19 @@ where
             // POSSIBLY run a clear before the last diff.
             if !run_differ {
                 use_context = false;
-                run_differ =
-                    self.audio_feed.get_audio_length_ms() >= self.audio_feed.get_capacity_in_ms();
+                let audio_len = self.audio_feed.get_audio_length_ms();
+                let capacity_len = self.audio_feed.get_capacity_in_ms();
+                run_differ = audio_len >= capacity_len;
 
                 // If the differ should be run on the next pass, clear the audio, push the entire audio buffer to the working set,
                 // And expect the differ to run on the next pass.
                 if run_differ {
+                    // There are two-ish approaches to resolving the word boundary that could be taken.
+                    // Either keep ~300ms or so and turn -off- using previous context,
+                    // OR, turn on using previous context and clearing the buffer completely.
+
+                    // For whatever reason, the latter seems to be performing
+                    // more accurately in practice, so that will be the implementation going thus far.
                     self.audio_feed.clear();
                     working_set.clear();
                     working_set.extend(segments);
@@ -618,8 +630,10 @@ where
                     // prefix by strings of size 2+
                     // It might also be wise to reconsider the indexing business if doing so.
                     // A prefix of 2 strings is most likely going to be more accurate.
-                    //
-                    //enumerate(): `(idx, <item>)`, `old_text.iter().enumerate().skip(old_start)`
+
+                    // It might be improved if instead I find the first match, and then check the
+                    // -next- match to move indices around--to handle the case where the next words
+                    // are not correct.
 
                     for (idx, token) in old_text.iter().enumerate().skip(old_start) {
                         let mut max_score = 0.0;
@@ -638,24 +652,45 @@ where
 
                     if let Some(swap_idx) = old_boundary
                         && let Some(new_idx) = new_boundary
-                        && swap_idx < old_text.len() - 1
-                        && new_idx < new_text.len() - 1
                     {
                         #[cfg(debug_assertions)]
                         {
                             dedup_swaps += 1;
                         }
-                        let new_start = new_idx + 1;
-                        let new_end = (new_start + 2).min(new_text.len() - 1);
 
-                        // So, this should -probably- be around 300ms * num_words,
-                        // but I'm not quite sure just yet, or whether this is going to work out as planned.
+                        // Find out where to start copying and where to end
+                        let mut old_start = swap_idx;
+                        let mut new_start = new_idx;
 
-                        // Since I don't have timestamp information, I'm going out on a limb here.
-                        // The boundary
-                        let num_words = new_end.saturating_sub(new_start);
-                        old_text.truncate(swap_idx + 1);
-                        old_text.extend_from_slice(&new_text[new_start..=new_end]);
+                        // This essentially "confirms" the overlap between both buffers
+                        // to determine where to truncate from, and how much (extra) audio to clear
+                        loop {
+                            let old_token = old_text.get(old_start);
+                            let new_token = new_text.get(new_start);
+                            if old_token.is_none() || new_token.is_none() {
+                                break;
+                            }
+
+                            let similar = jaro_winkler(old_token.unwrap(), new_token.unwrap());
+                            // THIS MIGHT NEED TO BE HIGHER.
+                            if similar < DIFF_THRESHOLD_LOW {
+                                break;
+                            }
+                            old_start += 1;
+                            new_start += 1;
+                        }
+
+                        // Since I don't have timestamp information, I'm going out on a limb here to
+                        // try and get this to be passable; it seems to be okay in most cases.
+                        // The goal is to "confirm" audio on the left half, and count the word distance
+                        // from the right half (new), and clear the remaining overage.
+                        let num_words = new_start.saturating_sub(new_idx);
+                        #[cfg(debug_assertions)]
+                        {
+                            max_num_words = max_num_words.max(num_words);
+                        }
+
+                        old_text.truncate(old_start + 1);
                         last_seg.replace_text(Arc::from(old_text.join(" ").trim()));
 
                         self.audio_feed.clear_n_samples(CLEAR_MS * num_words);
@@ -679,7 +714,8 @@ where
                 // If there are any remaining segments, drain them into the working set.
                 // If the dedup somehow happens to happen again, -or- if a pause is detected,
                 // the remaining segments need to be in the working set.
-                working_set.extend(segments);
+                // I think this is causing the accidental duplication
+                // working_set.extend(segments);
 
                 run_differ = false;
 
@@ -796,8 +832,8 @@ impl RealtimeTranscriberHandle {
 
 // Conservatively at 90% match
 pub const DIFF_THRESHOLD_HIGH: f64 = 0.9;
-pub const DIFF_THRESHOLD_MED: f64 = 0.7;
-pub const DIFF_THRESHOLD_LOW: f64 = 0.65;
+pub const DIFF_THRESHOLD_MED: f64 = 0.8;
+pub const DIFF_THRESHOLD_LOW: f64 = 0.75;
 pub const TIMESTAMP_GAP: i64 = 1000;
 pub const TIMESTAMP_EPSILON: i64 = 10;
 
@@ -810,11 +846,12 @@ pub const N_SEGMENTS_DIFF: usize = 3;
 pub const WORKING_SET_SIZE: usize = N_SEGMENTS_DIFF * 5;
 pub const PAUSE_DURATION: u64 = 100;
 
-// This might be a little bit too high?
-// The dedup is pretty rare with a large-enough buffer size that it seems unlikely
-// Perhaps this is treated as "best effort" and hope that natural speech patterns are enough to
-// get a "reasonably natural" stream.
-const CLEAR_MS: usize = 100;
+// This is a bit of a magic constant.
+// The idea here is that a word takes ~300ms to say.
+// Since it's not known whether/where a word might get chopped off, this is a conservative guess
+// that hopefully will move the audio tail to a pause/to a point where whisper can't resolve it
+// after using context to confirm the transcription on a dedup pass.
+const CLEAR_MS: usize = 50;
 pub const N_SAMPLES_30S: usize = ((1e-3 * 30000.0) * WHISPER_SAMPLE_RATE) as usize;
 const VAD_TIMEOUT_MS: u128 = 1500;
 const AUDIO_MIN_LEN: usize = WHISPER_SAMPLE_RATE as usize;

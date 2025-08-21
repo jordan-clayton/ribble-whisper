@@ -1,9 +1,11 @@
-use std::error::Error;
-use std::sync::Arc;
-
 use crate::audio::audio_ring_buffer::AudioRingBuffer;
 use crate::utils::Sender;
 use sdl2::audio::{AudioCallback, AudioFormatNum};
+use std::error::Error;
+use std::sync::Arc;
+use std::thread::sleep;
+
+const SLEEP_MILLIS: u64 = 100;
 
 /// Trait alias to unify Audio formats to meet the bounds of Audio Backends.
 pub trait RecorderSample:
@@ -52,20 +54,40 @@ impl<T: RecorderSample> RingBufSink<T> {
 /// Significantly faster for audio fanout than `Vec<T>`; prefer when possible.
 /// NOTE: Due to synchronization difficulties, pushing can result in logging false positives if the sink is still
 /// in scope and has not yet been paused. This is most likely to occur when transcription finishes.
-pub struct ArcChannelSink<T>(Sender<Arc<[T]>>);
+pub struct ArcChannelSink<T> {
+    channel: Sender<Arc<[T]>>,
+    logged_disconnect: bool,
+}
 impl<T: RecorderSample> ArcChannelSink<T> {
     pub fn new(sender: Sender<Arc<[T]>>) -> Self {
-        Self(sender)
+        Self {
+            channel: sender,
+            logged_disconnect: false,
+        }
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        self.logged_disconnect
     }
 }
 /// Pushes audio out using a message queue to fan out data as `Vec<T>`
 /// Use only if vectors are required in further processing, otherwise prefer the ArcChannelSink.
 /// NOTE: Due to synchronization difficulties, pushing can result in logging false positives if the sink is still
 /// in scope and has not yet been paused. This is most likely to occur when transcription finishes.
-pub struct VecChannelSink<T>(Sender<Vec<T>>);
+pub struct VecChannelSink<T> {
+    channel: Sender<Vec<T>>,
+    logged_disconnect: bool,
+}
 impl<T: RecorderSample> VecChannelSink<T> {
     pub fn new(sender: Sender<Vec<T>>) -> Self {
-        Self(sender)
+        Self {
+            channel: sender,
+            logged_disconnect: false,
+        }
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        self.logged_disconnect
     }
 }
 
@@ -81,7 +103,22 @@ impl<T: RecorderSample> SampleSink for ArcChannelSink<T> {
     /// NOTE: Due to synchronization difficulties, this can log false positives if the sink is still
     /// in scope and has not yet been paused. This is most likely to occur when transcription finishes.
     fn push(&mut self, data: &[Self::Sample]) {
-        if let Err(e) = self.0.try_send(Arc::from(data)) {
+        if let Err(e) = self.channel.try_send(Arc::from(data)) {
+            if e.is_disconnected() {
+                if !self.logged_disconnect {
+                    self.logged_disconnect = true;
+                    #[cfg(feature = "ribble-logging")]
+                    {
+                        log::warn!("Arc Recorder channel disconnected!");
+                    }
+                    #[cfg(not(feature = "ribble-logging"))]
+                    {
+                        eprintln!("Arc Recorder channel disconnected!");
+                    }
+                }
+                sleep(std::time::Duration::from_millis(SLEEP_MILLIS));
+                return;
+            }
             #[cfg(feature = "ribble-logging")]
             {
                 log::warn!(
@@ -109,7 +146,22 @@ impl<T: RecorderSample> SampleSink for ArcChannelSink<T> {
 impl<T: RecorderSample> SampleSink for VecChannelSink<T> {
     type Sample = T;
     fn push(&mut self, data: &[Self::Sample]) {
-        if let Err(e) = self.0.try_send(data.to_vec()) {
+        if let Err(e) = self.channel.try_send(data.to_vec()) {
+            if e.is_disconnected() {
+                if !self.logged_disconnect {
+                    self.logged_disconnect = true;
+                    #[cfg(feature = "ribble-logging")]
+                    {
+                        log::warn!("Vec Recorder channel disconnected!");
+                    }
+                    #[cfg(not(feature = "ribble-logging"))]
+                    {
+                        eprintln!("Vec Recorder channel disconnected!");
+                    }
+                }
+                sleep(std::time::Duration::from_millis(SLEEP_MILLIS));
+                return;
+            }
             #[cfg(feature = "ribble-logging")]
             {
                 log::warn!(

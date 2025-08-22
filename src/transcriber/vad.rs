@@ -143,7 +143,7 @@ pub struct Silero {
 }
 
 impl Silero {
-    const PADDING_CHUNKS: usize = 10;
+    const PADDING_CHUNKS: usize = 3;
 
     pub fn with_detection_probability_threshold(mut self, probability: f32) -> Self {
         self.detection_probability_threshold = probability;
@@ -189,7 +189,7 @@ impl<T: voice_activity_detector::Sample> VAD<T> for Silero {
         }
         // Create a LabelIterator to stream the prediction over the sample chunks at the given detection threshold.
         // LabelIterator allows for padding to compensate for sudden speech cutoffs/gaps in audio;
-        // 3 frames is expected to be sufficient.
+        // 5 frames is expected to be sufficient.
         let probabilites = samples.iter().copied().label(
             &mut self.vad,
             self.detection_probability_threshold,

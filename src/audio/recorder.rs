@@ -104,7 +104,12 @@ impl<T: RecorderSample> SampleSink for ArcChannelSink<T> {
     /// in scope and has not yet been paused. This is most likely to occur when transcription finishes.
     fn push(&mut self, data: &[Self::Sample]) {
         if let Err(e) = self.channel.try_send(Arc::from(data)) {
-            if e.is_disconnected() {
+            #[cfg(feature = "crossbeam")]
+            let disconnected = e.is_disconnected();
+            #[cfg(not(feature = "crossbeam"))]
+            let disconnected = matches!(e, std::sync::mpsc::TrySendError::Disconnected(_));
+
+            if disconnected {
                 if !self.logged_disconnect {
                     self.logged_disconnect = true;
                     #[cfg(feature = "ribble-logging")]
@@ -147,7 +152,12 @@ impl<T: RecorderSample> SampleSink for VecChannelSink<T> {
     type Sample = T;
     fn push(&mut self, data: &[Self::Sample]) {
         if let Err(e) = self.channel.try_send(data.to_vec()) {
-            if e.is_disconnected() {
+            #[cfg(feature = "crossbeam")]
+            let disconnected = e.is_disconnected();
+            #[cfg(not(feature = "crossbeam"))]
+            let disconnected = matches!(e, std::sync::mpsc::TrySendError::Disconnected(_));
+
+            if disconnected {
                 if !self.logged_disconnect {
                     self.logged_disconnect = true;
                     #[cfg(feature = "ribble-logging")]

@@ -1,7 +1,6 @@
 // Basic tests to ensure the ring_buffer runs properly and wraparound logic is correct
 #[cfg(test)]
 mod ringbuffer_tests {
-    use ribble_whisper::audio::audio_ring_buffer;
     use ribble_whisper::audio::audio_ring_buffer::AudioRingBuffer;
     use ribble_whisper::transcriber;
     #[test]
@@ -182,12 +181,10 @@ mod ringbuffer_tests {
         // Get the current head length; this should be unchanged.
         let head_len = ring_buffer.get_head_position();
 
-        // Now, clear 4 seconds of audio; expect the buffer to be of length constants::N_SAMPLES_KEEP
+        // Now, clear 4 seconds of audio; expect the buffer to be empty.
+        // The old implementation kept roughly N_SAMPLES, but this is not necessary with the new implementation.
         ring_buffer.clear_n_samples(4000);
-        assert_eq!(
-            ring_buffer.get_audio_length(),
-            audio_ring_buffer::N_SAMPLES_KEEP
-        );
+        assert_eq!(ring_buffer.get_audio_length(), 0);
         // Ensure the head is unchanged (only the audio length should be reduced to nearly 0).
         assert_eq!(ring_buffer.get_head_position(), head_len);
     }
@@ -217,8 +214,7 @@ mod ringbuffer_tests {
 
         // Now, clear 5 seconds of audio; expect the buffer to be of length 5s + constants::N_SAMPLES_KEEP
         ring_buffer.clear_n_samples(5000);
-        let anticipated_len =
-            (5f64 * transcriber::WHISPER_SAMPLE_RATE) as usize + audio_ring_buffer::N_SAMPLES_KEEP;
+        let anticipated_len = (5f64 * transcriber::WHISPER_SAMPLE_RATE) as usize;
 
         assert_eq!(anticipated_len, ring_buffer.get_audio_length());
         // Expect the head to be at position constants::N_SAMPLES_KEEP

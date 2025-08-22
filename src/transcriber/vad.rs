@@ -143,6 +143,8 @@ pub struct Silero {
 }
 
 impl Silero {
+    const PADDING_CHUNKS: usize = 10;
+
     pub fn with_detection_probability_threshold(mut self, probability: f32) -> Self {
         self.detection_probability_threshold = probability;
         self
@@ -191,7 +193,7 @@ impl<T: voice_activity_detector::Sample> VAD<T> for Silero {
         let probabilites = samples.iter().copied().label(
             &mut self.vad,
             self.detection_probability_threshold,
-            3usize,
+            Self::PADDING_CHUNKS,
         );
 
         // Since LabelIterator/ProbabilityIterator do not have a non-consuming way to compare
@@ -222,7 +224,11 @@ impl<T: voice_activity_detector::Sample> VAD<T> for Silero {
         samples
             .iter()
             .copied()
-            .label(&mut self.vad, self.detection_probability_threshold, 3usize)
+            .label(
+                &mut self.vad,
+                self.detection_probability_threshold,
+                Self::PADDING_CHUNKS,
+            )
             .filter(|frame| frame.is_speech())
             // Extract the chunks which contain speech
             .flat_map(|frame| frame.iter().copied().collect::<Vec<T>>())

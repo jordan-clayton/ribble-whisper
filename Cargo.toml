@@ -1,8 +1,8 @@
 [package]
 name = "ribble_whisper"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
-description = "High-level wrapper around whisper-rs features with support for realtime transcription; designed for use in GUI and TUI applications."
+description = "High-level wrapper around whisper-rs and related transcription features with support for realtime transcription."
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/jordan-clayton/whisper-realtime"
@@ -38,6 +38,7 @@ regex = { version = "1.11.1", optional = true }
 sha1 = { version = "0.10.6", optional = true }
 # TODO: look at forking voice_activity_detector to include passthrough args for CUDA + COREML execution providers
 # Also: change the default session to try-load said execution providers (see Ort docs).
+# Also twice: There seems to be some major problems with Silero (v5) and quiet speech; consider falling back to previous.
 voice_activity_detector = "0.2.1"
 earshot = "0.1.0"
 webrtc-vad = "0.4.0"

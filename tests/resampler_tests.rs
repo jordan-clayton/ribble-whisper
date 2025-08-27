@@ -15,7 +15,6 @@ mod resampler_test {
     use ribble_whisper::transcriber;
     use ribble_whisper::transcriber::offline_transcriber::OfflineTranscriberBuilder;
     use ribble_whisper::transcriber::vad::Silero;
-    use ribble_whisper::transcriber::Transcriber;
     use ribble_whisper::whisper::configs::WhisperConfigsV2;
     use ribble_whisper::whisper::model::{DefaultModelBank, DefaultModelType};
 

@@ -9,13 +9,12 @@ mod transcriber_tests {
     use ribble_whisper::audio::audio_ring_buffer::AudioRingBuffer;
     #[cfg(feature = "resampler")]
     use ribble_whisper::audio::loading::load_normalized_audio_file;
-    use ribble_whisper::audio::{audio_backend, AudioChannelConfiguration, WhisperAudioSample};
+    use ribble_whisper::audio::{AudioChannelConfiguration, WhisperAudioSample, audio_backend};
     use ribble_whisper::transcriber::offline_transcriber::OfflineTranscriberBuilder;
     use ribble_whisper::transcriber::realtime_transcriber::RealtimeTranscriberBuilder;
     use ribble_whisper::transcriber::vad::Silero;
     use ribble_whisper::transcriber::{
-        redirect_whisper_logging_to_hooks, CallbackTranscriber, Transcriber, WhisperCallbacks, WhisperOutput,
-        WHISPER_SAMPLE_RATE,
+        WHISPER_SAMPLE_RATE, WhisperCallbacks, WhisperOutput, redirect_whisper_logging_to_hooks,
     };
     use ribble_whisper::utils;
     use ribble_whisper::utils::callback::{Nop, RibbleWhisperCallback};
@@ -94,7 +93,9 @@ mod transcriber_tests {
                     audio_ring_buffer.push_audio(chunk)
                 }
             });
-            let t_thread = s.spawn(move || transcriber.process_audio(t_thread_run_transcription));
+            let t_thread = s.spawn(move || {
+                transcriber.run_stream(t_thread_run_transcription, Default::default())
+            });
             // Simple thread to just drain the audio - this will sleep until it receives output from
             // the transcriber
             let _d_thread = s.spawn(move || {

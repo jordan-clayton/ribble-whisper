@@ -1,6 +1,6 @@
 use std::ops::Deref;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::utils::callback::Callback;
 use crate::utils::errors::RibbleWhisperError;
@@ -31,6 +31,8 @@ pub fn redirect_whisper_logging_to_hooks() {
     whisper_rs::install_logging_hooks()
 }
 
+// TODO: this does not need to be a trait.
+// Move the description to the realtime_transcriber and add a flag for slow-stop.
 /// Handles running Whisper transcription
 pub trait Transcriber {
     /// Loads a compatible whisper model, sets up the whisper state and runs the full model
@@ -44,23 +46,9 @@ pub trait Transcriber {
     ) -> Result<String, RibbleWhisperError>;
 }
 
-/// Handles running Whisper transcription, with support for optional callbacks
-/// These callbacks are called from whisper so their safety cannot be completely guaranteed.
-/// However, since these callbacks do not touch the whisper state, they should work as expected.
-pub trait CallbackTranscriber<P, S>: Transcriber
-where
-    P: OfflineWhisperProgressCallback,
-    S: OfflineWhisperNewSegmentCallback,
-{
-    fn process_with_callbacks(
-        &self,
-        run_transcription: Arc<AtomicBool>,
-        callbacks: WhisperCallbacks<P, S>,
-    ) -> Result<String, RibbleWhisperError>;
-}
-
 /// Encapsulates various whisper callbacks which can be set before running transcription
 /// Other callbacks will be added as needed.
+#[derive(Default)]
 pub struct WhisperCallbacks<P, S>
 where
     P: OfflineWhisperProgressCallback,

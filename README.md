@@ -159,7 +159,7 @@ a_thread_run_transcription.store(false, Ordering::Release);
 
 // Move the transcriber off to a thread to handle processing audio
 let transcription_thread =
-s.spawn( move | | transcriber.process_audio(t_thread_run_transcription));
+s.spawn( move | | transcriber.start_stream(t_thread_run_transcription, Default::default()));
 
 // Update the UI with the newly transcribed data
 let print_thread = s.spawn( move | | {

@@ -1,15 +1,15 @@
 use parking_lot::Mutex;
-use std::ffi::{c_int, c_void, CStr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ffi::{CStr, c_int, c_void};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use whisper_rs::{WhisperNewSegmentCallback, WhisperProgressCallback};
 
 use crate::audio::{AudioChannelConfiguration, WhisperAudioSample};
 use crate::transcriber::vad::VAD;
 use crate::transcriber::{
-    build_whisper_context, CallbackTranscriber, OfflineWhisperNewSegmentCallback,
-    OfflineWhisperProgressCallback, Transcriber, WhisperCallbacks,
+    OfflineWhisperNewSegmentCallback, OfflineWhisperProgressCallback, WhisperCallbacks,
+    build_whisper_context,
 };
 use crate::utils::errors::RibbleWhisperError;
 use crate::whisper::configs::WhisperConfigsV2;
@@ -267,12 +267,13 @@ where
         // Return the final transcription.
         Ok(text.join("").trim().to_string())
     }
-}
 
-impl<V: VAD<f32>, M: ModelRetriever> Transcriber for OfflineTranscriber<V, M> {
-    // NOTE: this uses the unsafe API for whisper callbacks to have a little more control over the FFI.
-    // Expect this implementation to be safe, for all intents and purposes.
-    fn process_audio(
+    /// Loads a compatible whisper model, sets up the whisper state and runs the full model
+    /// # Arguments
+    /// * run_transcription: `Arc<AtomicBool>`, a shared flag used to indicate when to stop transcribing
+    /// # Returns
+    /// * Ok(String) on success, Err(RibbleWhisperError) on failure
+    pub fn process_audio(
         &self,
         run_transcription: Arc<AtomicBool>,
     ) -> Result<String, RibbleWhisperError> {
@@ -297,26 +298,23 @@ impl<V: VAD<f32>, M: ModelRetriever> Transcriber for OfflineTranscriber<V, M> {
         }
         res
     }
-}
 
-impl<V, M, P, S> CallbackTranscriber<P, S> for OfflineTranscriber<V, M>
-where
-    V: VAD<f32>,
-    M: ModelRetriever,
-    P: OfflineWhisperProgressCallback,
-    S: OfflineWhisperNewSegmentCallback,
-{
-    // NOTE: this uses the unsafe API for whisper callbacks to have a little more control over the FFI.
-    // Expect this implementation to be safe, for all intents and purposes.
-    // It should be impossible for the callback trait objects to go out of scope with the current implementation.
-    // If, however, it is the case that an invalid stack address is sent to whisper--
-    // then just take the performance hit and box the trait objects.
-    // As of testing thus far, this implementation is safe.
-    fn process_with_callbacks(
+    /// Handles running Whisper transcription, with support for optional callbacks
+    /// These callbacks are called from whisper so their safety cannot be completely guaranteed.
+    /// Loads a compatible whisper model, sets up the whisper state and runs the full model
+    /// # Arguments
+    /// * run_transcription: `Arc<AtomicBool>`, a shared flag used to indicate when to stop transcribing
+    /// # Returns
+    /// * Ok(String) on success, Err(RibbleWhisperError) on failure
+    pub fn process_with_callbacks<P, S>(
         &self,
         run_transcription: Arc<AtomicBool>,
         callbacks: WhisperCallbacks<P, S>,
-    ) -> Result<String, RibbleWhisperError> {
+    ) -> Result<String, RibbleWhisperError>
+    where
+        P: OfflineWhisperProgressCallback,
+        S: OfflineWhisperNewSegmentCallback,
+    {
         // Decompose the callbacks struct
         let WhisperCallbacks {
             progress: maybe_progress_callback,

@@ -1,6 +1,6 @@
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use strsim::jaro_winkler;
@@ -8,11 +8,11 @@ use strsim::jaro_winkler;
 use crate::audio::audio_ring_buffer::AudioRingBuffer;
 use crate::transcriber::vad::VAD;
 use crate::transcriber::{
-    build_whisper_context, RibbleWhisperSegment, Transcriber, TranscriptionSnapshot,
-    WhisperControlPhrase, WhisperOutput, WHISPER_SAMPLE_RATE,
+    RibbleWhisperSegment, TranscriptionSnapshot, WHISPER_SAMPLE_RATE, WhisperControlPhrase,
+    WhisperOutput, build_whisper_context,
 };
-use crate::utils::errors::RibbleWhisperError;
 use crate::utils::Sender;
+use crate::utils::errors::RibbleWhisperError;
 use crate::whisper::configs::WhisperRealtimeConfigs;
 use crate::whisper::model::ModelRetriever;
 use std::error::Error;
@@ -111,7 +111,7 @@ where
         }
     }
     /// Set the voice activity detector to a shared VAD, (e.g. pre-allocated).
-    /// **NOTE: Trying to use this VAD in 2 places simultaneously will result in significant lock contention.**
+    /// **NOTE: Trying to use this VAD in 2 places simultaneously will result in lock contention**
     /// **NOTE: VADs must be reset before being used in a different context**
     pub fn with_shared_voice_activity_detector<V2: VAD<f32> + Sync + Send>(
         self,
@@ -270,23 +270,9 @@ where
             }
         }
     }
-}
 
-impl<V, M> Default for RealtimeTranscriberBuilder<V, M>
-where
-    V: VAD<f32>,
-    M: ModelRetriever,
-{
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<V, M> Transcriber for RealtimeTranscriber<V, M>
-where
-    V: VAD<f32>,
-    M: ModelRetriever,
-{
+    // TODO: break this up into functions.
+    //
     // This streaming implementation uses a sliding window + VAD + diffing approach to approximate
     // a continuous audio file. This will only start transcribing segments when voice is detected.
     // Its accuracy isn't bulletproof (and highly depends on the model), but it's reasonably fast
@@ -300,9 +286,10 @@ where
     // - run_transcription: an atomic state flag so that the transcriber can be terminated from another location
     // e.g. UI
 
-    fn process_audio(
+    pub fn run_stream(
         &self,
         run_transcription: Arc<AtomicBool>,
+        slow_stop: Arc<AtomicBool>,
     ) -> Result<String, RibbleWhisperError> {
         // Alert the UI
         self.send_control_phrase(WhisperControlPhrase::GettingReady);
@@ -519,6 +506,11 @@ where
             });
 
             // POSSIBLY run a clear before the last diff.
+            //
+            // TODO: Call this something like "segment merge" after implementing a token-level
+            // differ used at "confirm time". + Add an appropriate debug/control phrase.
+            //
+            //
             if !run_differ {
                 use_context = false;
                 let audio_len = self.audio_feed.get_audio_length_ms();
@@ -717,6 +709,11 @@ where
                 run_transcription.store(false, Ordering::Release);
             }
         }
+
+        if slow_stop.load(Ordering::Acquire) {
+            // TODO: send control phrase -> "Slow-Stop" or similar.
+            todo!("Run inference one last time and confirm the working set.");
+        }
         self.send_control_phrase(WhisperControlPhrase::EndTranscription);
 
         // Clean up the whisper context
@@ -737,6 +734,16 @@ where
 
         // Strip remaining whitespace and return
         Ok(final_out.trim().to_string())
+    }
+}
+
+impl<V, M> Default for RealtimeTranscriberBuilder<V, M>
+where
+    V: VAD<f32>,
+    M: ModelRetriever,
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 

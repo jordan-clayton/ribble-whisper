@@ -1,33 +1,29 @@
 use std::env;
-use std::io::{stdout, Write};
+use std::io::{Write, stdout};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::scope;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use parking_lot::Mutex;
-#[cfg(feature = "sdl2")]
-use ribble_whisper::audio::audio_backend::default_backend;
 use ribble_whisper::audio::audio_backend::AudioBackend;
 use ribble_whisper::audio::audio_backend::CaptureSpec;
+#[cfg(feature = "sdl2")]
+use ribble_whisper::audio::audio_backend::default_backend;
 use ribble_whisper::audio::audio_ring_buffer::AudioRingBuffer;
 use ribble_whisper::audio::microphone::MicCapture;
 use ribble_whisper::audio::recorder::ArcChannelSink;
 use ribble_whisper::audio::{AudioChannelConfiguration, WhisperAudioSample};
 #[cfg(feature = "downloader")]
-use ribble_whisper::downloader::downloaders::sync_download_request;
-#[cfg(feature = "downloader")]
 use ribble_whisper::downloader::SyncDownload;
+#[cfg(feature = "downloader")]
+use ribble_whisper::downloader::downloaders::sync_download_request;
 use ribble_whisper::transcriber::offline_transcriber::OfflineTranscriberBuilder;
 use ribble_whisper::transcriber::realtime_transcriber::RealtimeTranscriberBuilder;
 use ribble_whisper::transcriber::vad::Silero;
-use ribble_whisper::transcriber::{
-    redirect_whisper_logging_to_hooks, Transcriber, TranscriptionSnapshot,
-};
-use ribble_whisper::transcriber::{
-    CallbackTranscriber, WhisperCallbacks, WhisperControlPhrase, WhisperOutput,
-};
+use ribble_whisper::transcriber::{TranscriptionSnapshot, redirect_whisper_logging_to_hooks};
+use ribble_whisper::transcriber::{WhisperCallbacks, WhisperControlPhrase, WhisperOutput};
 use ribble_whisper::utils;
 use ribble_whisper::utils::callback::{Nop, RibbleWhisperCallback, StaticRibbleWhisperCallback};
 use ribble_whisper::whisper::configs::WhisperRealtimeConfigs;
@@ -208,7 +204,7 @@ fn main() {
 
         // Move the transcriber off to a thread to handle processing audio
         let transcription_thread =
-            s.spawn(move || transcriber.process_audio(t_thread_run_transcription));
+            s.spawn(move || transcriber.run_stream(t_thread_run_transcription, Default::default()));
 
         // Update the UI with the newly transcribed data
         let print_thread = s.spawn(move || {

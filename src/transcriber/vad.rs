@@ -539,6 +539,7 @@ type EarshotPredictionFilterPredicate =
 
 /// Earshot VAD backend for use in transcription.
 /// Adapts [earshot::VoiceActivityDetector] to predict voice activity using Earshot (WebRtc)
+/// #[deprecated(since = "0.2.1", note = "There are significant issues with this implementation. Prefer using WebRtc."]
 pub struct Earshot {
     vad: earshot::VoiceActivityDetector,
     /// Used to break the sample into frames of size frame_length_in_ms

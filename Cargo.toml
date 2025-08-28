@@ -1,6 +1,6 @@
 [package]
 name = "ribble_whisper"
-version = "0.3.0"
+version = "0.2.1"
 edition = "2024"
 description = "High-level wrapper around whisper-rs and related transcription features with support for realtime transcription."
 readme = "README.md"

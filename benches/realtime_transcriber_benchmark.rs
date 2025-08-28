@@ -29,6 +29,9 @@ use ribble_whisper::whisper::model::{DefaultModelBank, DefaultModelType, ModelBa
 // Early benching suggests that the choice of VAD, from what is currently implemented, is irrelevant for realtime.
 // The bottleneck will always be Whisper.
 
+// NOTE: There are some major problems with the Earshot implementation at the crate level and is
+// no longer able to build/prime for this test. It has been removed for the interim.
+
 pub fn realtime_vad_benchmark(c: &mut Criterion) {
     // To prevent excess memory allocations from clouding the benchmark, pre-allocate as many
     // resources as feasible. Pass and share where appropriate.
@@ -62,26 +65,27 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
             .with_filter_aggressiveness(
                 ribble_whisper::transcriber::vad::WebRtcFilterAggressiveness::LowBitrate,
             )
-            .with_voiced_proportion_threshold(0.5)
+            .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
             .build_webrtc()
     };
 
-    let earshot_build_method = || {
-        WebRtcBuilder::new()
-            .with_sample_rate(ribble_whisper::transcriber::vad::WebRtcSampleRate::R16kHz)
-            .with_frame_length_millis(
-                ribble_whisper::transcriber::vad::WebRtcFrameLengthMillis::MS10,
-            )
-            .with_filter_aggressiveness(
-                ribble_whisper::transcriber::vad::WebRtcFilterAggressiveness::LowBitrate,
-            )
-            .with_voiced_proportion_threshold(0.5)
-            .build_earshot()
-    };
+    // let earshot_build_method = || {
+    //     WebRtcBuilder::new()
+    //         .with_sample_rate(ribble_whisper::transcriber::vad::WebRtcSampleRate::R16kHz)
+    //         .with_frame_length_millis(
+    //             ribble_whisper::transcriber::vad::WebRtcFrameLengthMillis::MS10,
+    //         )
+    //         .with_filter_aggressiveness(
+    //             ribble_whisper::transcriber::vad::WebRtcFilterAggressiveness::LowBitrate,
+    //         )
+    //         .with_voiced_proportion_threshold(DEFAULT_VOICE_PROPORTION_THRESHOLD)
+    //         .build_earshot()
+    // };
 
     // Prep each transcriber. Each has its own sender/receiver channel to avoid the need to drain in-between tests.
     // Silero
     let (mut s_transcriber, s_handle, s_channel) = build_transcriber(
+        "SILERO",
         &configs,
         &audio_ring_buffer,
         Arc::clone(&model_bank),
@@ -89,6 +93,7 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
     );
     eprintln!("SILERO BUILT");
     let (mut w_transcriber, w_handle, w_channel) = build_transcriber(
+        "WEBRTC",
         &configs,
         &audio_ring_buffer,
         Arc::clone(&model_bank),
@@ -96,17 +101,18 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
     );
 
     eprintln!("WEBRTC BUILT");
-    let (mut e_transcriber, e_handle, e_channel) = build_transcriber(
-        &configs,
-        &audio_ring_buffer,
-        Arc::clone(&model_bank),
-        earshot_build_method,
-    );
-    eprintln!("EARSHOT BUILT");
+    // let (mut e_transcriber, e_handle, e_channel) = build_transcriber(
+    //     "EARSHOT",
+    //     &configs,
+    //     &audio_ring_buffer,
+    //     Arc::clone(&model_bank),
+    //     earshot_build_method,
+    // );
+    // eprintln!("EARSHOT BUILT");
 
     let s_channel = Arc::new(s_channel);
     let w_channel = Arc::new(w_channel);
-    let e_channel = Arc::new(e_channel);
+    // let e_channel = Arc::new(e_channel);
 
     c.bench_function("Silero realtime", |b| {
         b.iter(|| {
@@ -132,17 +138,17 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
         });
     });
 
-    c.bench_function("Earshot", |b| {
-        b.iter(|| {
-            realtime_bencher(
-                &mut e_transcriber,
-                e_handle.clone(),
-                Arc::clone(&e_channel),
-                &audio_ring_buffer,
-                &audio_sample,
-            )
-        });
-    });
+    // c.bench_function("Earshot", |b| {
+    //     b.iter(|| {
+    //         realtime_bencher(
+    //             &mut e_transcriber,
+    //             e_handle.clone(),
+    //             Arc::clone(&e_channel),
+    //             &audio_ring_buffer,
+    //             &audio_sample,
+    //         )
+    //     });
+    // });
 }
 
 pub fn realtime_bencher<V: VAD<f32> + Send + Sync>(
@@ -224,15 +230,26 @@ fn prep_audio() -> Box<[f32]> {
         None::<fn(usize)>,
     )
     .expect("Resampling should not cause issues.");
+
+    const AUDIO_GAIN: f32 = 10.0;
+    // Silero v5 struggles hard with quiet audio.
+    // Apply a small amount of gain to the signal to improve the chances of detection
     let audio = match audio {
         WhisperAudioSample::I16(_) => unreachable!(),
-        WhisperAudioSample::F32(audio) => audio,
+        WhisperAudioSample::F32(audio) => {
+            let mut gain_applied: Vec<_> = audio.iter().copied().map(|f| f * AUDIO_GAIN).collect();
+            let peak = gain_applied.iter().fold(1.0f32, |acc, f| acc.max(f.abs()));
+            debug_assert!(peak >= 1.0);
+
+            gain_applied.iter_mut().for_each(|f| *f /= peak);
+            Arc::from(gain_applied)
+        }
     };
 
     // Extract only the voiced frames to try and prevent accidental early silence.
     // Use Silero for accuracy
     let mut vad =
-        Silero::try_new_whisper_offline_default().expect("Silero should build without issues");
+        Silero::try_new_whisper_realtime_default().expect("Silero should build without issues");
     let out = vad.extract_voiced_frames(&audio);
     assert!(!out.is_empty());
     out
@@ -258,6 +275,7 @@ fn prep_configs() -> (WhisperRealtimeConfigs, DefaultModelBank) {
 }
 
 fn build_transcriber<V: VAD<f32> + Send + Sync>(
+    vad_impl_name: &str,
     configs: &WhisperRealtimeConfigs,
     audio_buffer: &AudioRingBuffer<f32>,
     model_bank: Arc<DefaultModelBank>,
@@ -275,12 +293,12 @@ fn build_transcriber<V: VAD<f32> + Send + Sync>(
     let sample = audio_buffer.read(configs::VAD_SAMPLE_MS);
     let detected_audio = vad.voice_detected(&sample);
     if !detected_audio {
-        eprintln!("FAILED TO DETECT FIRST RUN");
+        eprintln!("{vad_impl_name} FAILED TO DETECT FIRST RUN");
         // Try again
         let try_detect_again = vad.voice_detected(&sample);
         assert!(
             try_detect_again,
-            "Failed to detect audio again, might be audio and not vad."
+            "{vad_impl_name} Failed to detect audio again, might be audio and not vad."
         );
     }
 

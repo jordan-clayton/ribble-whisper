@@ -50,7 +50,7 @@ pub fn resample(
     let samples_to_process = match samples {
         ResampleableAudio::I16(audio_in) => {
             let mut output = vec![0.0f32; audio_in.len()];
-            whisper_rs::convert_integer_to_float_audio(*audio_in, &mut output)?;
+            whisper_rs::convert_integer_to_float_audio(audio_in, &mut output)?;
             output
         }
         ResampleableAudio::F32(audio_in) => audio_in.to_vec(),
@@ -98,12 +98,7 @@ fn resample_stereo(
 
     let left = &waves_out[0];
     let right = &waves_out[1];
-    let interleaved: Vec<f32> = left
-        .iter()
-        .zip(right)
-        .map(|(x, y)| [*x, *y])
-        .flatten()
-        .collect();
+    let interleaved: Vec<f32> = left.iter().zip(right).flat_map(|(x, y)| [*x, *y]).collect();
 
     Ok(WhisperAudioSample::F32(Arc::from(interleaved)))
 }

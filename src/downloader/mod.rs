@@ -35,6 +35,7 @@ pub trait Writable {
     fn open_write_file(file_path: &Path) -> Result<File, RibbleWhisperError> {
         let dest = fs::OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(file_path)?;
 

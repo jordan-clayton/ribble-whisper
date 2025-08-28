@@ -57,7 +57,7 @@ pub fn vad_benchmark(c: &mut Criterion) {
     });
 }
 
-fn bench_vad<S: IntoPcmS16, T: VAD<S>>(vad: &mut impl VAD<S>, samples: &[S]) {
+fn bench_vad<S: IntoPcmS16, T: VAD<S>>(vad: &mut T, samples: &[S]) {
     let _ = vad.voice_detected(samples);
 }
 

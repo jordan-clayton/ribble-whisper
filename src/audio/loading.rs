@@ -8,9 +8,9 @@ use symphonia::core::formats::FormatReader;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::probe::{Hint, ProbeResult};
 
-use crate::audio::WhisperAudioSample;
 #[cfg(feature = "resampler")]
-use crate::audio::resampler::{ResampleableAudio, needs_normalizing, normalize_audio};
+use crate::audio::resampler::{needs_normalizing, normalize_audio, ResampleableAudio};
+use crate::audio::WhisperAudioSample;
 use crate::utils::callback::{Callback, Nop, RibbleWhisperCallback};
 use crate::utils::errors::RibbleWhisperError;
 
@@ -105,7 +105,7 @@ pub fn load_normalized_audio_file<P: AsRef<Path> + Sized>(
         ))?
         .count();
 
-    let needs_normalizing = needs_normalizing(&track);
+    let needs_normalizing = needs_normalizing(track);
     let decoder = symphonia::default::get_codecs().make(&track.codec_params, &decoder_opts)?;
     // Decode loop
 

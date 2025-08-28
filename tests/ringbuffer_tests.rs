@@ -1,4 +1,4 @@
-// Basic tests to ensure the ring_buffer runs properly and wraparound logic is correct
+pub const SAMPLE_DURATION: usize = 10000; // Basic tests to ensure the ring_buffer runs properly and wraparound logic is correct
 #[cfg(test)]
 mod ringbuffer_tests {
     use ribble_whisper::audio::audio_ring_buffer::AudioRingBuffer;
@@ -34,9 +34,9 @@ mod ringbuffer_tests {
             (crate::SAMPLE_DURATION / 1000) as f64 * transcriber::WHISPER_SAMPLE_RATE / 2f64;
         let sample_len = sample_len as usize;
 
-        let mut samples = vec![0.5f32; sample_len];
+        let samples = vec![0.5f32; sample_len];
         // This is expected to not panic.
-        ring_buffer.push_audio(&mut samples);
+        ring_buffer.push_audio(&samples);
         assert_eq!(ring_buffer.get_audio_length(), sample_len);
         assert_eq!(ring_buffer.get_capacity(), sample_len * 2);
     }
@@ -153,12 +153,12 @@ mod ringbuffer_tests {
 
         let mut results_vec: [Vec<f32>; 3] = [vec![], vec![], vec![]];
         // This is expected to not panic.
-        for i in 0..3 {
-            let mut samples = vec![i as f32; sample_len];
+        for (idx, buf) in results_vec.iter_mut().enumerate() {
+            let samples = vec![idx as f32; sample_len];
             // Insert 5s of samples.
-            ring_buffer.push_audio(&mut samples);
+            ring_buffer.push_audio(&samples);
             // Get 2s of samples.
-            ring_buffer.read_into(2000, &mut results_vec[i]);
+            ring_buffer.read_into(2000, buf);
         }
 
         // Length check.
@@ -202,7 +202,7 @@ mod ringbuffer_tests {
         // This has to be added in chunks to get the full sample, otherwise only the last buffer_len
         // samples get pushed to the ringbuffer.
         for sample in sample_chunks {
-            ring_buffer.push_audio(&sample);
+            ring_buffer.push_audio(sample);
         }
 
         // Ensure that the head is at the middle of the audio buffer
@@ -221,7 +221,7 @@ mod ringbuffer_tests {
         assert_eq!(ring_buffer.get_head_position(), head_pos);
     }
 
-    fn non_decreasing(v: &Vec<f32>) -> bool {
+    fn non_decreasing(v: &[f32]) -> bool {
         for i in 0..v.len() - 1 {
             let j = i + 1;
             if v[j] < v[i] {
@@ -231,5 +231,3 @@ mod ringbuffer_tests {
         true
     }
 }
-
-pub const SAMPLE_DURATION: usize = 10000;

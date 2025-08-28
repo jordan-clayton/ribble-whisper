@@ -9,12 +9,12 @@ mod transcriber_tests {
     use ribble_whisper::audio::audio_ring_buffer::AudioRingBuffer;
     #[cfg(feature = "resampler")]
     use ribble_whisper::audio::loading::load_normalized_audio_file;
-    use ribble_whisper::audio::{AudioChannelConfiguration, WhisperAudioSample, audio_backend};
+    use ribble_whisper::audio::{audio_backend, AudioChannelConfiguration, WhisperAudioSample};
     use ribble_whisper::transcriber::offline_transcriber::OfflineTranscriberBuilder;
     use ribble_whisper::transcriber::realtime_transcriber::RealtimeTranscriberBuilder;
     use ribble_whisper::transcriber::vad::Silero;
     use ribble_whisper::transcriber::{
-        WHISPER_SAMPLE_RATE, WhisperCallbacks, WhisperOutput, redirect_whisper_logging_to_hooks,
+        redirect_whisper_logging_to_hooks, WhisperCallbacks, WhisperOutput, WHISPER_SAMPLE_RATE,
     };
     use ribble_whisper::utils;
     use ribble_whisper::utils::callback::{Nop, RibbleWhisperCallback};
@@ -53,7 +53,7 @@ mod transcriber_tests {
 
         let audio_ring_buffer = AudioRingBuffer::default();
         let (transcriber, handle) = RealtimeTranscriberBuilder::<Silero, DefaultModelBank>::new()
-            .with_configs(configs.clone())
+            .with_configs(configs)
             .with_audio_buffer(&audio_ring_buffer)
             .with_output_sender(text_sender)
             .with_voice_activity_detector(vad)
@@ -166,7 +166,7 @@ mod transcriber_tests {
         let audio = WhisperAudioSample::F32(Arc::clone(&AUDIO_SAMPLE));
 
         let transcriber = OfflineTranscriberBuilder::<Silero, DefaultModelBank>::new()
-            .with_configs(configs.clone())
+            .with_configs(configs)
             .with_audio(audio)
             .with_channel_configurations(AudioChannelConfiguration::Mono)
             .with_model_retriever(model_bank)
@@ -203,7 +203,7 @@ mod transcriber_tests {
                 let mut transcription = String::new();
                 while let Ok(out) = text_receiver.recv() {
                     transcription.push_str(&out);
-                    transcription.push_str(" ");
+                    transcription.push(' ');
                 }
                 transcription.trim().to_string()
             });

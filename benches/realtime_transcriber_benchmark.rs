@@ -115,7 +115,7 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
                 s_handle.clone(),
                 Arc::clone(&s_channel),
                 &audio_ring_buffer,
-                Box::clone(&audio_sample),
+                &audio_sample,
             )
         });
     });
@@ -127,7 +127,7 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
                 w_handle.clone(),
                 Arc::clone(&w_channel),
                 &audio_ring_buffer,
-                Box::clone(&audio_sample),
+                &audio_sample,
             )
         });
     });
@@ -139,7 +139,7 @@ pub fn realtime_vad_benchmark(c: &mut Criterion) {
                 e_handle.clone(),
                 Arc::clone(&e_channel),
                 &audio_ring_buffer,
-                Box::clone(&audio_sample),
+                &audio_sample,
             )
         });
     });
@@ -150,7 +150,7 @@ pub fn realtime_bencher<V: VAD<f32> + Send + Sync>(
     handle: RealtimeTranscriberHandle,
     receiver: Arc<Receiver<WhisperOutput>>,
     audio_ring_buffer: &AudioRingBuffer<f32>,
-    audio_sample: Box<[f32]>,
+    audio_sample: &[f32],
 ) {
     // Prevent logging whisper to stderr
     whisper_rs::install_logging_hooks();
@@ -203,7 +203,7 @@ pub fn realtime_bencher<V: VAD<f32> + Send + Sync>(
                 }
             }
             // Drain any excess messages.
-            while let Ok(_) = receiver.try_recv() {}
+            while receiver.try_recv().is_ok() {}
         });
     });
 }
@@ -287,8 +287,8 @@ fn build_transcriber<V: VAD<f32> + Send + Sync>(
     // Transcriber
     let (transcriber, transcriber_handle) =
         RealtimeTranscriberBuilder::<V, DefaultModelBank>::new()
-            .with_configs(configs.clone())
-            .with_audio_buffer(&audio_buffer)
+            .with_configs(*configs)
+            .with_audio_buffer(audio_buffer)
             .with_output_sender(text_sender)
             .with_shared_model_retriever(model_bank)
             .with_voice_activity_detector(vad)

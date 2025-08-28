@@ -99,7 +99,7 @@ mod downloader_tests {
         let file_path = model_bank.model_directory();
         let file_name = model_bank
             .get_model(model_id)
-            .and_then(|model| Some(model.file_name()));
+            .map(|model| model.file_name());
         assert!(
             file_name.is_some(),
             "Model bank failed to return a model via ID in async download test"
@@ -196,7 +196,7 @@ mod downloader_tests {
         let file_path = model_bank.model_directory();
         let file_name = model_bank
             .get_model(model_id)
-            .and_then(|model| Some(model.file_name()));
+            .map(|model| model.file_name());
         assert!(
             file_name.is_some(),
             "Model bank failed to return a model via ID in async download test"

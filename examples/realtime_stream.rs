@@ -91,7 +91,7 @@ fn main() {
 
     let offline_audio_buffer: Arc<Mutex<Option<Vec<f32>>>> = Arc::new(Mutex::new(None));
     let mut recording_audio = false;
-    if let Ok(_) = std::io::stdin().read_line(&mut stdin_buffer) {
+    if std::io::stdin().read_line(&mut stdin_buffer).is_ok() {
         let confirm = stdin_buffer.trim().to_lowercase();
         if "y" == confirm {
             println!("Confirmed. Recording audio.\n");
@@ -107,7 +107,7 @@ fn main() {
             "Would you like to compare transcription similarity between real-time and offline? y/n: "
         );
         stdout().flush().unwrap();
-        if let Ok(_) = std::io::stdin().read_line(&mut stdin_buffer) {
+        if std::io::stdin().read_line(&mut stdin_buffer).is_ok() {
             let confirm = stdin_buffer.trim().to_lowercase();
             if "y" == confirm {
                 println!("Confirmed, will compare transcriptions.");

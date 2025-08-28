@@ -10,7 +10,7 @@ mod model_tests {
 
         let test_url = model_type.url();
         let test_url_str = test_url.as_str();
-        const EXPECTED_URL_STR: &'static str =
+        const EXPECTED_URL_STR: &str =
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin";
 
         assert_eq!(

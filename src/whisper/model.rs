@@ -537,7 +537,7 @@ impl DefaultModelType {
     }
 
     #[cfg(feature = "integrity")]
-    fn to_sha_key(&self) -> &'static str {
+    fn as_sha_key(&self) -> &'static str {
         match self {
             DefaultModelType::TinyEn => "tiny.en",
             DefaultModelType::Tiny => "tiny",
@@ -599,7 +599,7 @@ impl DefaultModelType {
         records_directory: &Path,
         client: Option<&blocking::Client>,
     ) -> Result<String, RibbleWhisperError> {
-        let key = self.to_sha_key();
+        let key = self.as_sha_key();
         let needs_updating = checksums_need_updating(records_directory, client);
 
         // Handle the current status of the stored repository checksum

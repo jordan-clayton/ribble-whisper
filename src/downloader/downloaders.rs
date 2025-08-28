@@ -17,7 +17,7 @@ use crate::downloader::{SyncDownload, Writable};
 use crate::utils::callback::{AbortCallback, Callback, Nop};
 use crate::utils::errors::RibbleWhisperError;
 
-const TEMP_FILE_EXTENSION: &'static str = ".tmp";
+const TEMP_FILE_EXTENSION: &str = ".tmp";
 
 /// Streams in bytes (asynchronously) to download data.
 /// Current progress can be obtained by supplying a Callback.
@@ -207,9 +207,9 @@ where
             // If this fails, it most likely didn't begin to the first place and cleanup isn't
             // required.
             if tmp_path.is_file() {
-                let _ = std::fs::remove_file(&tmp_path.as_path());
+                let _ = std::fs::remove_file(tmp_path.as_path());
             } else {
-                let _ = std::fs::remove_dir(&tmp_path.as_path());
+                let _ = std::fs::remove_dir(tmp_path.as_path());
             }
         };
 
@@ -222,13 +222,11 @@ where
                 ));
             }
 
-            let buf = next.or_else(|e| {
+            let buf = next.inspect_err(|_e| {
                 cleanup();
-                Err(e)
             })?;
-            dest.write_all(&buf).or_else(|e| {
+            dest.write_all(&buf).inspect_err(|_e| {
                 cleanup();
-                Err(e)
             })?;
 
             let mut cur_progress = self.progress;
@@ -435,7 +433,7 @@ where
                 let _ = std::fs::remove_dir(tmp_path.as_path());
             }
 
-            return Err(downloaded.err().unwrap().into());
+            return Err(downloaded.err().unwrap());
         } else {
             // Otherwise, rename the temporary file to the file_path
             // Expect that this will never fail, but in case it does, the error will be returned.
@@ -508,7 +506,6 @@ pub async fn async_download_request(
 /// * fallback_file_name: a fallback name to use in-case response parsing fails
 /// # Returns:
 /// Ok(SyncDownloader) on success, Err on a failure to either send the request or get the content length
-
 pub fn sync_download_request(
     url: &str,
     fallback_file_name: &str,
@@ -576,7 +573,7 @@ fn get_content_name(response: BorrowedDownloadResponse) -> Option<String> {
         })
         .and_then(|file_field| file_field.to_str().ok())
         .and_then(|file_string| file_string.split("filename=").last())
-        .and_then(|filename| Some(filename.trim_end_matches(";")));
+        .map(|filename| filename.trim_end_matches(";"));
 
     if let Some(content_name) = try_content_name {
         return Some(sanitize_filename::sanitize(content_name));
@@ -587,7 +584,7 @@ fn get_content_name(response: BorrowedDownloadResponse) -> Option<String> {
     response
         .url()
         .path_segments()
-        .and_then(|segments| segments.last())
+        .and_then(|mut segments| segments.next_back())
         .and_then(|name| {
             if name.is_empty() {
                 None

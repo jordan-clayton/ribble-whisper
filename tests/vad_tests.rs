@@ -44,11 +44,10 @@ mod vad_tests {
             None::<fn(usize)>,
         )
         .expect("Test audio should load without issue.");
-        let audio = match sample {
+        match sample {
             WhisperAudioSample::I16(_) => unreachable!(),
             WhisperAudioSample::F32(audio) => audio,
-        };
-        audio
+        }
     });
 
     // Build a 10-second silent audio clip at 16kHz to tease out false positives.
@@ -128,7 +127,7 @@ mod vad_tests {
         // Test from the very first 4800 samples.
         let first_vad = &WHISPER_AUDIO_SAMPLE[..vad_ms_len];
         vad.reset_session();
-        let first_vad_voice_detected = vad.voice_detected(&first_vad);
+        let first_vad_voice_detected = vad.voice_detected(first_vad);
 
         assert!(
             !first_vad_voice_detected,
@@ -307,7 +306,6 @@ mod vad_tests {
             .with_voiced_proportion_threshold(REAL_TIME_VOICE_PROBABILITY_THRESHOLD);
 
         let mut vad = builder
-            .clone()
             .build_webrtc()
             .expect("WebRtc expected to build without issue.");
 
@@ -328,7 +326,6 @@ mod vad_tests {
         // Run the voice-detection over the extracted frames with the offline threshold to ensure
         // that most frames are speech
         vad = builder
-            .clone()
             .with_filter_aggressiveness(WebRtcFilterAggressiveness::Aggressive)
             .with_voiced_proportion_threshold(OFFLINE_VOICE_PROBABILITY_THRESHOLD)
             .build_webrtc()
@@ -346,7 +343,6 @@ mod vad_tests {
             .with_voiced_proportion_threshold(OFFLINE_VOICE_PROBABILITY_THRESHOLD);
 
         let mut vad = builder
-            .clone()
             .build_webrtc()
             .expect("WebRtc expected to build without issue.");
 
@@ -369,7 +365,6 @@ mod vad_tests {
         // VeryAggressive prunes out a significant portion of frames and might actually be missing on some overlaps
         // Aggressive detects around .9, VeryAggressive detects just over .75
         vad = builder
-            .clone()
             .with_filter_aggressiveness(WebRtcFilterAggressiveness::VeryAggressive)
             .build_webrtc()
             .expect("WebRtc expected to build without issue");
@@ -386,7 +381,6 @@ mod vad_tests {
             .with_voiced_proportion_threshold(REAL_TIME_VOICE_PROBABILITY_THRESHOLD);
 
         let mut vad = builder
-            .clone()
             .build_earshot()
             .expect("Earshot expected to build without issue.");
 
@@ -407,7 +401,6 @@ mod vad_tests {
         // Run the voice-detection over the extracted frames with the offline threshold to ensure
         // that most frames are speech
         vad = builder
-            .clone()
             .with_filter_aggressiveness(WebRtcFilterAggressiveness::Aggressive)
             .with_voiced_proportion_threshold(OFFLINE_VOICE_PROBABILITY_THRESHOLD)
             .build_earshot()
@@ -425,7 +418,6 @@ mod vad_tests {
             .with_voiced_proportion_threshold(OFFLINE_VOICE_PROBABILITY_THRESHOLD);
 
         let mut vad = builder
-            .clone()
             .build_earshot()
             .expect("Earshot expected to build without issue.");
 
@@ -448,7 +440,6 @@ mod vad_tests {
         // Earshot is much less accurate than WebRtc, and so even with VeryAggressive, this will
         // detect .9 of frames containing speech
         vad = builder
-            .clone()
             .with_filter_aggressiveness(WebRtcFilterAggressiveness::VeryAggressive)
             .with_voiced_proportion_threshold(0.8)
             .build_earshot()

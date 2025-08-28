@@ -1,7 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crate::transcriber;
 use crate::transcriber::WHISPER_SAMPLE_RATE;
 use crate::utils::errors::RibbleWhisperError;
 use parking_lot::Mutex;
@@ -19,7 +18,7 @@ struct InnerAudioRingBuffer<T: Copy + Clone + Default> {
     buffer: Mutex<Vec<T>>,
 }
 
-/// A thread-safe mpmc ring-buffer designed for use with a [crate::transcriber::realtime_transcriber::RealtimeTranscriber].
+/// A thread-safe mpmc ring-buffer designed for use with a [transcriber::realtime_transcriber::RealtimeTranscriber].
 /// Due to thread-safety requirements it cannot be lock-free, but it should have minimal overhead
 /// in most use-cases.
 #[derive(Clone)]
@@ -295,11 +294,11 @@ impl<T: Copy + Clone + Default> AudioRingBuffer<T> {
 }
 
 impl<T: Copy + Clone + Default> Default for AudioRingBuffer<T> {
-    /// Returns a Whisper-ready AudioRingBuffer, ready for use in a [crate::transcriber::realtime_transcriber::RealtimeTranscriber].
+    /// Returns a Whisper-ready AudioRingBuffer, ready for use in a [transcriber::realtime_transcriber::RealtimeTranscriber].
     fn default() -> Self {
         AudioRingBufferBuilder::new()
             .with_capacity_ms(AUDIO_BUFFER_CAPACITY)
-            .with_sample_rate(transcriber::WHISPER_SAMPLE_RATE as usize)
+            .with_sample_rate(WHISPER_SAMPLE_RATE as usize)
             .build()
             .expect("Default AudioRingbuffer should build without problems.")
     }

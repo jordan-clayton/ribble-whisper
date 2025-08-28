@@ -284,7 +284,11 @@ pub enum WhisperSamplingStrategy {
     BeamSearch { beam_size: usize, patience: f32 },
 }
 
-// TODO: docstring.
+/// Represents the buffering strategy used in real-time transcription. Set to continous to always run
+/// inference when the minimum amount of data for Whisper is ready. Set to buffered to send
+/// buffer_ms - long windows for inference. Buffering can improve accuracy and reduces the overall
+/// performance cost, but it will increase streaming latency. Lower-end hardware is the most likely
+/// to benefit from using buffered input.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Copy, Clone, Debug, Default)]
 pub enum RealtimeBufferingStrategy {

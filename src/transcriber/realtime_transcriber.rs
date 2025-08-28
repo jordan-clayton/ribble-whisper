@@ -46,6 +46,8 @@ pub const N_SAMPLES_30S: usize = ((1e-3 * 30000.0) * WHISPER_SAMPLE_RATE) as usi
 // This could probably be a little shorter
 const VAD_TIMEOUT_MS: u128 = 1500;
 
+const MIN_SIZE_FOR_WHISPER: usize = WHISPER_SAMPLE_RATE as usize;
+
 /// Builder for [RealtimeTranscriber]
 /// All fields are necessary and thus required to successfully build a RealtimeTranscriber.
 /// Multiple VAD implementations have been provided, see: [crate::transcriber::vad]
@@ -485,6 +487,15 @@ where
             // Depending on the buffering strategy, this will hold off on running the decode loop
             // excessively at the cost of some latency.
             if audio_samples.len() < min_sample_len {
+                #[cfg(debug_assertions)]
+                {
+                    // Whisper requires at least 1000ms of audio to run correctly, so even
+                    // continuous mode requires some sort of buffering.
+                    self.send_control_phrase(WhisperControlPhrase::Debug(
+                        "BUFFERING FOR NEXT INFERENCE".to_string(),
+                    ));
+                }
+
                 // Skip over the next VAD
                 // This will also skip over the clearing.
                 skip_vad_run_inference = true;
@@ -635,11 +646,22 @@ where
             }
         }
 
-        // TODO: this needs to be tested.
         if slow_stop.load(Ordering::Acquire) {
             self.send_control_phrase(WhisperControlPhrase::SlowStop);
             // This can just consume full params
-            if whisper_state.full(full_params, &audio_samples).is_ok() {
+            let mut final_full_params = full_params;
+            final_full_params.set_no_context(!use_context);
+
+            // Read the audio buffer in chunks of audio_sample_len
+            self.audio_feed
+                .read_into(self.configs.audio_sample_len_ms(), &mut audio_samples);
+
+            let enough_audio = audio_samples.len() >= MIN_SIZE_FOR_WHISPER;
+            if enough_audio
+                && whisper_state
+                    .full(final_full_params, &audio_samples)
+                    .is_ok()
+            {
                 let mut segments = whisper_state.as_iter().flat_map(|ws| ws.try_into());
                 if run_segment_merge {
                     let last_segment = working_set.iter_mut().last();
@@ -647,6 +669,10 @@ where
 
                     match (last_segment, first_new_segment) {
                         (Some(l_seg), Some(mut r_seg)) => {
+                            // Since the segment merge function would end up resulting in potential duplications
+                            // This does skip to the string deduplication and modifies the segments in place.
+                            // It does use the right-priority strategy, but if there are any artifacts,
+                            // they are expected to be caught in the final deduplication.
                             let (l_str, r_str) =
                                 match deduplicate_strings(l_seg.text(), r_seg.text()) {
                                     None => (Arc::clone(&l_seg.text), Arc::clone(&r_seg.text)),
@@ -670,7 +696,7 @@ where
                         }
 
                         // If both are none, then both sets are empty and this is a Nop.
-                        // If last_segment.is_some(), and segments is empty, this is a Nop
+                        // If last_segment.is_some(), and segments is empty, this is also a Nop
                         (_, _) => working_set.extend(segments),
                     }
                 } else {

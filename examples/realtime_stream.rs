@@ -26,7 +26,7 @@ use ribble_whisper::transcriber::{redirect_whisper_logging_to_hooks, Transcripti
 use ribble_whisper::transcriber::{WhisperCallbacks, WhisperControlPhrase, WhisperOutput};
 use ribble_whisper::utils;
 use ribble_whisper::utils::callback::{Nop, RibbleWhisperCallback, StaticRibbleWhisperCallback};
-use ribble_whisper::whisper::configs::WhisperRealtimeConfigs;
+use ribble_whisper::whisper::configs::{RealtimeBufferingStrategy, WhisperRealtimeConfigs};
 use ribble_whisper::whisper::model;
 use ribble_whisper::whisper::model::{DefaultModelBank, ModelBank, ModelId};
 use strsim::jaro;
@@ -34,11 +34,20 @@ use strsim::jaro;
 fn main() {
     let mut args = env::args().skip(1);
     let mut gain: Option<f32> = None;
+    let mut buffer_ms: Option<usize> = None;
+    let mut slow_stop = false;
 
     while let Some(arg) = args.next() {
         match &arg[..] {
             "-g" => {
                 gain = args.next().and_then(|num| num.parse().ok());
+            }
+
+            "-b" => {
+                buffer_ms = args.next().and_then(|num| num.parse().ok());
+            }
+            "-s" | "--slow-stop" => {
+                slow_stop = true;
             }
             _ => break,
         }
@@ -51,12 +60,20 @@ fn main() {
     let model_bank = Arc::new(model_bank);
     // Set the number of threads according to your hardware.
     // If you can allocate around 7-8, do so as this tends to be more performant.
-    let configs = WhisperRealtimeConfigs::default()
+    let mut configs = WhisperRealtimeConfigs::default()
         .with_n_threads(8)
         .with_model_id(Some(model_id))
         // Also, optionally set flash attention.
         // (Generally keep this on for a performance gain with gpu processing).
         .with_use_flash_attention(true);
+
+    if let Some(len_ms) = buffer_ms {
+        // 1000ms is effectively the same strategy as continuous.
+        let buffer_strategy_ms = len_ms.max(1000);
+        configs = configs.with_buffering_strategy(RealtimeBufferingStrategy::Buffered {
+            buffer_ms: buffer_strategy_ms,
+        });
+    }
 
     let audio_ring_buffer = AudioRingBuffer::<f32>::default();
 
@@ -66,6 +83,9 @@ fn main() {
     let (text_sender, text_receiver) = utils::get_channel(queue_size);
 
     // Note: Any VAD<T> + Send can be used.
+    // Also, Silero v5 tends to struggle with bad signals/poor audio.
+    // WebRtc may perform better and does not require the same amount of gain.
+    // Swap out the VAD accordingly.
     let vad = Silero::try_new_whisper_realtime_default()
         .expect("Silero realtime VAD expected to build without issue when configured properly.");
 
@@ -205,8 +225,12 @@ fn main() {
         });
 
         // Move the transcriber off to a thread to handle processing audio
-        let transcription_thread =
-            s.spawn(move || transcriber.run_stream(t_thread_run_transcription, Default::default()));
+        let transcription_thread = s.spawn(move || {
+            transcriber.run_stream(
+                t_thread_run_transcription,
+                Arc::new(AtomicBool::new(slow_stop)),
+            )
+        });
 
         // Update the UI with the newly transcribed data
         let print_thread = s.spawn(move || {
@@ -242,6 +266,31 @@ fn main() {
                 stdout().flush().expect("Stdout should clear normally.");
             }
 
+            // To catch final messages being sent from the realtime_transcriber, drain the last few
+            // messages from the channel.
+            // Since the real-time transcriber will go out of scope after it cleans up, this will
+            // error out.
+            while let Ok(last_msg) = text_receiver.recv() {
+                match last_msg {
+                    WhisperOutput::TranscriptionSnapshot(snapshot) => {
+                        latest_snapshot = Arc::clone(&snapshot);
+                    }
+                    WhisperOutput::ControlPhrase(message) => {
+                        latest_control_message = message;
+                    }
+                }
+                clear_stdout();
+                println!("Latest Control Message: {}\n", latest_control_message);
+                println!("Transcription:\n");
+                // Print the latest confirmed transcription.
+                print!("{}", latest_snapshot.confirmed());
+                // Print the remaining current working set of segments.
+                for segment in latest_snapshot.string_segments() {
+                    print!("{}", segment);
+                }
+                stdout().flush().expect("Stdout should clear normally.");
+            }
+
             println!("\nPrint thread completed.");
             // Take the last received snapshot and join it into a string.
             // This is just to demonstrate that the sending mechanism terminates to the same
@@ -265,6 +314,9 @@ fn main() {
 
     // Comparison
     // clear_stdout();
+    // NOTE: if running with Slow-Stop, the final bit of audio is sent through a final inference pass.
+    // The output is unlikely to match unless the audio ended exactly on a pause.
+    // Otherwise, expect these to be identical.
     println!("\nFinal Transcription (print thread):");
     println!("{}", &rt_transcription);
 

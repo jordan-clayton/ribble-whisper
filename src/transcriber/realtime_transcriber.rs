@@ -18,29 +18,20 @@ use crate::whisper::model::ModelRetriever;
 use std::error::Error;
 
 // Conservatively at 90% match
-// TODO: possibly bump these to 0.9/0.95 and Med: 0.85
+// It does not do well with strings that don't share a prefix, so "has/as" will end up being an
+// artifact. Until I come up with some bulletproof, clever-er solution that runs with low latency,
+// these errors may just need to be tolerated.
 pub const DIFF_THRESHOLD_HIGH: f64 = 0.9;
+// This is not as high as the "best match" and is intended for stride heuristics.
 pub const DIFF_THRESHOLD_MED: f64 = 0.85;
 pub const DIFF_THRESHOLD_LOW: f64 = 0.75;
 pub const TIMESTAMP_GAP: i64 = 1000;
 pub const TIMESTAMP_EPSILON: i64 = 10;
 
-// TEST THIS TO SEE IF THE DEDUP IS A BIT FASTER ON ONLY THE LAST SEGMENT
-// IF THAT'S THE CASE, DON'T RUN IT OVER A WORKING SET SIZE OF 3
-// FOR RESOLVING WORD BOUNDARIES, IT SHOULD PROBABLY BE THE LAST SEGMENT OR SO ANYWAY...?
-
-// TODO: find a good "close-enough" happy medium window.
-// Sometimes 5 is good, sometimes it's terrible. If someone is prone to repeating themselves, it will cause issues.
-// But perhaps that is not quite something I can solve.
-
-// This seems to be a reasonably good combination that balances word-boundaries.
-// This is possibly too high.
-// This needs to be tested a little bit more--it is more than likely, at most going to have 1-2
-// duplicate words from the blending, so running over 5 risks clobbering the output a little too hard.
 pub const N_TOKENS: usize = 5;
-
-// 400ms seems to be the most accurate so far -- perhaps tweaking the tokens down is a little better.
-// It's better to let ~1-2 words get duplicated (but similar enough), vs being cautious and risking a bad next-segment.
+// This is a little on the "safe" side, roughly around the amount of time it takes to say a word.
+// The string deduplication does a relatively decent job with catching these, so they will get
+// stamped out.
 pub const RETAIN_MS: usize = 500;
 
 // This is an artifact from the old implementation--but I believe whisper resolves across ~3
@@ -54,11 +45,6 @@ pub const PAUSE_DURATION: u64 = 100;
 pub const N_SAMPLES_30S: usize = ((1e-3 * 30000.0) * WHISPER_SAMPLE_RATE) as usize;
 // This could probably be a little shorter
 const VAD_TIMEOUT_MS: u128 = 1500;
-
-// TODO: do some investigation -> try and locate a full-segment duplication to set a breakpoint:
-// Try to find the moments where what I think are "hallucinations" are being hallucinated
-// Turning off context seems to fully eliminate the problem, but it could be covering up the real problem
-// The issue is very difficult to reproduce reliably, so I'm not quite sure what to look for just yet.
 
 /// Builder for [RealtimeTranscriber]
 /// All fields are necessary and thus required to successfully build a RealtimeTranscriber.
@@ -356,9 +342,10 @@ where
 
         // Set up remaining loop data.
 
-        // This is a relic from the old implementation--the time check could and should be simplified.
-
-        // Instant marker for timekeeping.
+        // Instant marker for timekeeping -> this is being left (for now) from the old implementation.
+        // In the future, if it is feasible to run a more sophisticated algorithm with word-level timestamps,
+        // look into using total time/time offsets to make smarter, dynamic decisions about trimming the word buffer
+        // to cut down on word-cutoffs.
         let mut t_last = Instant::now();
         // For timing the transcription (and timeout)
         let mut total_time = 0u128;
@@ -380,14 +367,16 @@ where
 
         let mut previous_pause_clear_buffer = false;
 
-        // TODO: this is probably causing problems -> set to false and remove this variable.
         let mut use_context = false;
 
         // NOTE: so, instants don't seem to be the right way to test things.
         // It seems to be triggering before 1 second has passed.
         let mut vad_timeout_start_instant = None;
 
-        let min_sample_len = self.configs.min_sample_len();
+        let audio_buffer_capacity = self.audio_feed.get_capacity();
+
+        // This is from the buffering strategy--higher buffer sample sizes
+        let min_sample_len = self.configs.min_sample_len().min(audio_buffer_capacity);
 
         while run_transcription.load(Ordering::Acquire) {
             let t_now = Instant::now();
@@ -534,31 +523,27 @@ where
 
             if !run_segment_merge {
                 use_context = false;
-                let audio_len = self.audio_feed.get_audio_length_ms();
-                // TODO: this can be retained before the loop starts.
-                // ONCE THE BUG IS FIXED, MOVE THIS HIGHER UP.
-                // ALSO, JUST USE CAPACITY - LEN, NO NEED FOR MS -> it forces atomics and cpu time to do this comparison with ms.
-                let capacity_len = self.audio_feed.get_capacity_in_ms();
-                run_segment_merge = audio_len >= capacity_len;
+                let audio_len = self.audio_feed.get_audio_length();
+                run_segment_merge = audio_len >= audio_buffer_capacity;
 
                 // If the "differ" should be run on the next pass, clear the audio, push the entire audio buffer to the working set,
                 // And expect the differ to run on the next pass.
                 if run_segment_merge {
-                    // TODO: determine whether to actually keep ~300 ms -> in practice, this does sometimes chop off words..
-                    // It might even be better to do 400-500 ms with the deduplication.
-                    self.audio_feed.clear_from_back_retain_ms(RETAIN_MS);
+                    // This is a (hopefully temporary) heuristic in-place to mitigate words being
+                    // chopped when the segment merge pass runs. Expect to need to tolerate
+                    // a small amount of error, but this does a passable job.
 
+                    // A rolling "confirmation" pass with a continuous window may return if it's
+                    // feasible on low-end hardware--this is being considered, but the latency
+                    // and power consumption will be poor.
+
+                    // Alternatively, word-level timestamps + offset is feasible to improve buffer
+                    // trimming and reduce word boundary errors.
+                    // TODO: look into word-level timestamp + offset approach to improve buffer trimming
+                    self.audio_feed.clear_from_back_retain_ms(RETAIN_MS);
                     working_set.clear();
                     working_set.extend(segments);
                     use_context = true;
-
-                    #[cfg(debug_assertions)]
-                    {
-                        // TODO: remove this later.
-                        // I'm not sure -where- the overwrite is happening, but I think the audio length is getting overwritten.
-                        let check_audio_len = self.audio_feed.get_audio_length_ms();
-                        debug_assert!(check_audio_len < capacity_len);
-                    }
                 } else {
                     working_set.clear();
                     working_set.extend(segments);
@@ -572,78 +557,16 @@ where
                 let last_segment = working_set.iter_mut().last();
                 let first_new_segment = segments.next();
 
-                // If there's no old segment (somehow), then there's no need to diff.
-                // If there's no new segment, then there's also no need to diff -> the next iteration is going to clobber the segments anyway.
-                // if let Some(last_seg) = last_segment
-                //     && let Some(new_seg) = first_new_segment
-                // {
-                //     blend_segments(last_seg, &new_seg);
-                // }
-
                 match (last_segment, first_new_segment) {
                     (Some(last_seg), Some(new_seg)) => {
-                        #[cfg(debug_assertions)]
-                        {
-                            // TODO: remove this later.
-                            // I'm not sure -where- the overwrite is happening, but I think the audio length is getting overwritten.
-                            let check_audio_len = self.audio_feed.get_audio_length_ms();
-                            let check_capacity_len = self.audio_feed.get_capacity_in_ms();
-                            debug_assert!(
-                                check_audio_len < check_capacity_len,
-                                "BUFFER LIKELY OVERWRITTEN."
-                            );
-                        }
-
-                        // TODO: REMOVE THIS AFTER DIAGNOSING THE PROBLEME.
-                        // -- if it doesn't happen here, then look at the other marked spots.
-                        // Maybe this needs to leverage the message queues.
-                        #[cfg(debug_assertions)]
-                        {
-                            let test_jaro = jaro_winkler(last_seg.text(), new_seg.text());
-                            // These will throw on a segment context hallucination.
-                            // I think the problem might be here, and due to context.
-
-                            if test_jaro >= DIFF_THRESHOLD_HIGH {
-                                let out_str = format!(
-                                    "PROBLEM! SCORE: {test_jaro}\nLAST: {}\nNEW{}",
-                                    last_seg.text(),
-                                    new_seg.text()
-                                );
-                                eprintln!("{out_str}");
-                                panic!("HALLUCINATION MOST LIKELY: {out_str}");
-                            }
-
-                            if test_jaro >= DIFF_THRESHOLD_MED {
-                                let out_str = format!(
-                                    "PROBLEM! SCORE: {test_jaro}\nLAST: {}\nNEW{}",
-                                    last_seg.text(),
-                                    new_seg.text()
-                                );
-                                eprintln!("{out_str}");
-                                panic!("HALLUCINATION MOST LIKELY: {out_str}");
-                            }
-
-                            if test_jaro >= DIFF_THRESHOLD_LOW {
-                                let out_str = format!(
-                                    "PROBLEM! SCORE: {test_jaro}\nLAST: {}\nNEW{}",
-                                    last_seg.text(),
-                                    new_seg.text()
-                                );
-                                eprintln!("{out_str}");
-                                panic!("HALLUCINATION MOST LIKELY: {out_str}");
-                            }
-                        }
-
                         blend_segments(last_seg, &new_seg);
                     }
 
                     // If the working set has just been cleared (pauses, etc.)
                     // Push the data to the working set and skip onto the next iteration.
-                    // In the case where this is being run as a last-pass before
+                    // In the case where this is being run as a last-pass before deduplication.
+                    // These segments shouldn't be trusted unless there is a genuine pause afterward.
                     (None, Some(new_seg)) => {
-                        // I -THINK- this is necessary?
-                        // It is possibly not and possibly the cause of the sporadic duplications.
-                        // TODO: investigate this further.
                         working_set.push_back(new_seg);
                         working_set.extend(segments);
                         run_segment_merge = false;
@@ -681,7 +604,7 @@ where
             if working_set.len() > WORKING_SET_SIZE {
                 #[cfg(debug_assertions)]
                 self.send_control_phrase(WhisperControlPhrase::Debug(
-                    "BAKING_WORKING_SET".to_string(),
+                    "DRAINING WORKING SET".to_string(),
                 ));
                 let up_to = working_set.len().saturating_sub(WORKING_SET_SIZE);
                 let mut confirm_from = working_set.drain(..up_to).collect();
@@ -712,6 +635,7 @@ where
             }
         }
 
+        // TODO: this needs to be tested.
         if slow_stop.load(Ordering::Acquire) {
             self.send_control_phrase(WhisperControlPhrase::SlowStop);
             // This can just consume full params
@@ -848,12 +772,6 @@ fn run_stride(
     (l_start, r_start)
 }
 
-// SO: this is working well for the most part, but it is triggering on some false positives.
-
-// EDGE CASE: repeated word, closest match.
-// If a closest match happens and the stride l_end - l_start (or r_end - r_start) = 0 and it's
-// -not- at the end of the left half, then it's very unlikely to be an actual match.
-
 // This runs right-side priority--since this is to catch words that are potentially duplicated, they're
 // most likely going to have better punctuation. Sometimes whisper will insert punctuation on the
 // left hand side when it doesn't have enough audio--this helps to mitigate that.
@@ -869,37 +787,28 @@ fn deduplicate_strings(str1: &str, str2: &str) -> Option<(String, String)> {
         } else {
             l_match
         };
-        // For sanity's sake, double-check that this is correct.
-        debug_assert!(l_buf.get(l_match_start).is_some());
-        debug_assert!(r_buf.get(r_match).is_some());
-        debug_assert!(jaro_winkler(l_buf[l_match_start], r_buf[r_match]) >= DIFF_THRESHOLD_HIGH);
-        let (l_end, r_end) = run_stride(&l_buf, l_match_start, &r_buf, r_match);
 
-        let num_words = l_end.saturating_sub(l_match_start);
+        let (l_match_end, r_match_end) = run_stride(&l_buf, l_match_start, &r_buf, r_match);
+
+        let num_words = l_match_end.saturating_sub(l_match_start);
 
         if num_words < 2 {
-            // So, if this is catching only one word, make sure it's toward the -end- of the buffer.
-            // Otherwise, it's more-than-likely a false positive.
-            // TODO: strictly-end is too strict, some duplications get through.
-            // HOWEVER, it might be the case where the match is also too far down the new string...
-            // EITHER: Reduce the number of tokens compared (likely bad idea),
-            // OR: Add a second check to make sure the r_end is toward the start of the string
-            // PERHAPS, it is better to loosely match on the midpoint of both.
-            if l_end < l_buf.len().saturating_sub(2) {
-                // This is to test out the algorithm thus far to see that things are working as expected.
-                eprintln!("EARLY MATCH");
+            let l_midpoint = (l_start + (l_buf.len() - 1)) / 2;
+            let r_midpoint = (r_end - 1) / 2;
+
+            // If the match isn't close to where the segments would naturally fall,
+            // they are likely to be different strings that just happen to have repeated words.
+            // Err on the side of caution and accept a small amount of error to avoid accidentally
+            // clobbering the transcription on a false-positive.
+            if l_match_end < l_midpoint && r_match_end > r_midpoint {
                 return None;
-            } else {
-                // TODO: remove this branch when testing done
-                // May still have artifacts.
-                eprintln!("MAYBE NOT AN EARLY MATCH?");
             }
         }
 
         // Confirm up to just before the end of the match on the left.
-        l_buf.truncate(l_end);
+        l_buf.truncate(l_match_end);
         // Drop up to just before the end of the match on the right.
-        let up_to = (r_end).min(r_buf.len());
+        let up_to = r_match_end.min(r_buf.len());
         drop(r_buf.drain(..up_to));
 
         Some((l_buf.join(" "), r_buf.join(" ")))
@@ -928,25 +837,25 @@ fn blend_segments(l_segment: &mut RibbleWhisperSegment, r_segment: &RibbleWhispe
         } else {
             l_match
         };
-        // For sanity's sake, double-check that this is correct.
-        debug_assert!(l_buf.get(l_match_start).is_some());
-        debug_assert!(r_buf.get(r_match).is_some());
-        debug_assert!(jaro_winkler(l_buf[l_match_start], r_buf[r_match]) >= DIFF_THRESHOLD_HIGH);
-        let (l_end, _r_end) = run_stride(&l_buf, l_match_start, &r_buf, r_match);
 
-        let num_words = l_end.saturating_sub(l_match_start);
+        let (l_match_end, _r_match_end) = run_stride(&l_buf, l_match_start, &r_buf, r_match);
+
+        let num_words = l_match_end.saturating_sub(l_match_start);
 
         if num_words < 2 {
-            if l_end < l_buf.len().saturating_sub(2) {
-                // This is to test out the algorithm thus far to see that things are working as expected.
-                eprintln!("EARLY MATCH");
+            let l_midpoint = (l_start + (l_buf.len() - 1)) / 2;
+            let r_midpoint = (r_end - 1) / 2;
+
+            // If the match isn't close to where the segments would naturally fall,
+            // they are likely to be different strings that just happen to have repeated words.
+            // Err on the side of caution and accept a small amount of error to avoid accidentally
+            // clobbering the transcription on a false-positive.
+            if l_match_end < l_midpoint && r_end > r_midpoint {
                 return;
-            } else {
-                eprintln!("MAYBE NOT AN EARLY MATCH?");
             }
         }
         // Confirm up to the end of the match on the left.
-        l_buf.truncate(l_end + 1);
+        l_buf.truncate(l_match_end + 1);
 
         // Drop up to the end of the match on the right.
         let up_to = (r_end + 1).min(r_buf.len());

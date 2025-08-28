@@ -15,7 +15,7 @@ mod resampler_test {
     use ribble_whisper::transcriber;
     use ribble_whisper::transcriber::offline_transcriber::OfflineTranscriberBuilder;
     use ribble_whisper::transcriber::vad::Silero;
-    use ribble_whisper::whisper::configs::WhisperConfigsV2;
+    use ribble_whisper::whisper::configs::WhisperConfigs;
     use ribble_whisper::whisper::model::{DefaultModelBank, DefaultModelType};
 
     // Tests the resampling from a file path, which will also implicitly using the track handle
@@ -83,10 +83,10 @@ mod resampler_test {
         let model_type = DefaultModelType::MediumEn;
         let (bank, model_id) = prep_model_bank(model_type);
 
-        let configs = WhisperConfigsV2::default()
+        let configs = WhisperConfigs::default()
             .with_model_id(Some(model_id))
             .with_n_threads(8)
-            .set_flash_attention(true);
+            .with_flash_attention(true);
 
         // NOTE: this could throw off the test (lol); remove if silero is too aggressive.
         let vad = Silero::try_new_whisper_offline_default()
@@ -128,10 +128,10 @@ mod resampler_test {
         let model_type = DefaultModelType::MediumEn;
         let (bank, model_id) = prep_model_bank(model_type);
 
-        let configs = WhisperConfigsV2::default()
+        let configs = WhisperConfigs::default()
             .with_model_id(Some(model_id))
             .with_n_threads(8)
-            .set_flash_attention(true);
+            .with_flash_attention(true);
 
         // NOTE: this could throw off the test (lol); remove if silero is too aggressive.
         let vad = Silero::try_new_whisper_offline_default()

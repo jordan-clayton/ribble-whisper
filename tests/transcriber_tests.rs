@@ -18,7 +18,7 @@ mod transcriber_tests {
     };
     use ribble_whisper::utils;
     use ribble_whisper::utils::callback::{Nop, RibbleWhisperCallback};
-    use ribble_whisper::whisper::configs::{WhisperConfigsV2, WhisperRealtimeConfigs};
+    use ribble_whisper::whisper::configs::{WhisperConfigs, WhisperRealtimeConfigs};
     use ribble_whisper::whisper::model::{DefaultModelBank, DefaultModelType};
 
     // Prepare an audio sample with a known output to try and make conditions as replicable as
@@ -45,7 +45,7 @@ mod transcriber_tests {
             .with_model_id(Some(model_id))
             // Also, optionally set flash attention.
             // Generally keep this on for a performance gain.
-            .set_flash_attention(true);
+            .with_use_flash_attention(true);
 
         let (text_sender, text_receiver) = utils::get_channel(32);
         let vad = Silero::try_new_whisper_realtime_default()
@@ -154,10 +154,10 @@ mod transcriber_tests {
         let model_type = DefaultModelType::Medium;
         let (model_bank, model_id) = prep_model_bank(model_type);
 
-        let configs = WhisperConfigsV2::default()
+        let configs = WhisperConfigs::default()
             .with_n_threads(8)
             .with_model_id(Some(model_id))
-            .set_flash_attention(true);
+            .with_flash_attention(true);
 
         // For receiving data in the print loop.
         let (text_sender, text_receiver) = utils::get_channel(32);

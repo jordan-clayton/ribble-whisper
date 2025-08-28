@@ -107,6 +107,7 @@ impl<T: Copy + Clone + Default> AudioRingBuffer<T> {
 
     /// Returns the currently stored audio length measured in ms
     pub fn get_audio_length_ms(&self) -> usize {
+        // UH, this is totally incorrect.
         let audio_len = self.inner.audio_len.load(Ordering::Acquire) as f64;
         let sample_rate = self.inner.sample_rate.load(Ordering::Acquire) as f64;
         ((audio_len * 1000f64) / sample_rate) as usize
@@ -128,12 +129,12 @@ impl<T: Copy + Clone + Default> AudioRingBuffer<T> {
     /// NOTE: if the input length exceeds the buffer capacity, only the last n samples are written
     /// to the buffer, where n = buffer capacity
     pub fn push_audio(&self, input: &[T]) {
-        let len = input.len();
-        let mut n_samples = len;
+        let mut n_samples = input.len();
         let mut stream = input.to_vec();
 
         let buffer_len = self.inner.buffer_capacity.load(Ordering::Acquire);
         if n_samples > buffer_len {
+            let len = n_samples;
             n_samples = buffer_len;
             let new_start = len - n_samples;
             stream = stream[new_start..].to_vec();
@@ -160,7 +161,10 @@ impl<T: Copy + Clone + Default> AudioRingBuffer<T> {
 
             let new_head_pos = (head_pos + n_samples) % buffer_len;
             self.inner.head.store(new_head_pos, Ordering::Release);
-            self.inner.audio_len.store(buffer_len, Ordering::Release);
+
+            let old_audio_len = self.inner.audio_len.load(Ordering::Acquire);
+            let new_audio_len = (old_audio_len + n_samples).min(buffer_len);
+            self.inner.audio_len.store(new_audio_len, Ordering::Release);
         } else {
             let copy_buffer = &mut buffer[head_pos..head_pos + n_samples];
             let stream_buffer = &stream[0..n_samples];
@@ -170,9 +174,9 @@ impl<T: Copy + Clone + Default> AudioRingBuffer<T> {
             let new_head_pos = (head_pos + n_samples) % buffer_len;
             self.inner.head.store(new_head_pos, Ordering::Release);
 
-            let audio_len = self.inner.audio_len.load(Ordering::Acquire);
+            let old_audio_len = self.inner.audio_len.load(Ordering::Acquire);
+            let new_audio_len = (old_audio_len + n_samples).min(buffer_len);
 
-            let new_audio_len = std::cmp::min(audio_len + n_samples, buffer_len);
             self.inner.audio_len.store(new_audio_len, Ordering::Release);
         }
     }
@@ -253,8 +257,12 @@ impl<T: Copy + Clone + Default> AudioRingBuffer<T> {
         self.inner.audio_len.store(0, Ordering::SeqCst);
     }
 
-    /// Clears the AudioRingBuffer but retains at most len_ms amount of data.
-    pub fn clear_retain_ms(&self, len_ms: usize) {
+    /// Clears the AudioRingBuffer retains at most len_ms amount of data.
+    pub fn clear_from_back_retain_ms(&self, len_ms: usize) {
+        if len_ms == 0 {
+            self.clear();
+            return;
+        }
         // Guard state by hogging the mutex to prevent data inconsistencies
         let _buffer = self.inner.buffer.lock();
         let sample_rate = self.inner.sample_rate.load(Ordering::Acquire);
@@ -266,7 +274,7 @@ impl<T: Copy + Clone + Default> AudioRingBuffer<T> {
     /// Clears the requested amount of audio data from the **back** of the buffer.
     /// If you want to retain a small amount of data, you will need to manually calculate the
     /// correct length in milliseconds to clear.
-    pub fn clear_n_samples(&self, len_ms: usize) {
+    pub fn clear_n_ms_from_back(&self, len_ms: usize) {
         if len_ms == 0 {
             return;
         }

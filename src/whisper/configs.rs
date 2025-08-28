@@ -2,12 +2,17 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 
+use crate::transcriber::WHISPER_SAMPLE_RATE;
+use crate::whisper::model::{DefaultModelType, Model, ModelId};
 use strum::{AsRefStr, Display, EnumCount, EnumIter, EnumString, FromRepr, IntoStaticStr};
 use whisper_rs;
 
-use crate::whisper::model::{DefaultModelType, Model, ModelId};
-
-// Store an ID instead of the actual model -- come back to implement this once Model is refactored.
+pub const MAX_PROMPT_TOKENS: usize = 16384;
+// Recommended 1Hr.
+pub const REALTIME_AUDIO_TIMEOUT: u128 = std::time::Duration::new(3600, 0).as_millis();
+pub const VAD_SAMPLE_MS: usize = 300;
+// in ms
+pub const AUDIO_SAMPLE_MS: usize = 10000;
 
 /// Versioned wrapper for supported whisper-realtime configuration types.
 /// Can be serialized (using serde or otherwise) to persist settings.
@@ -15,16 +20,13 @@ use crate::whisper::model::{DefaultModelType, Model, ModelId};
 /// V2: Current whisper-only configurations.
 /// RealtimeV1: A complete realtime-configuration. Composed of V2 and RealtimeConfigs
 ///
-/// NOTE: RealtimeConfigs is not included directly; it cannot be used alone for transcription
-/// NOTE: Until WhisperConfigsV2 is stabilized, it is not reccomended to serialize either:
-/// WhisperConfigsV2, WhisperRealtimeConfigs.
-/// Instead, serialize WhisperConfigsV1, clone and consume it to pass into a Transcriber object
-/// as necessary.
+/// NOTE: RealtimeConfigs is not included directly; it cannot be used alone for transcription in this library
+/// #[deprecated(since = "0.3.0", note = "This was only used to ease with migration over to the new API in the case where the old configs were serialized. Use WhisperConfigs for whisper-only configs and WhisperRealtimeConfigs for whisper + real-time configurations."]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Clone, Debug)]
 pub enum Configs {
     V1(WhisperConfigsV1),
-    V2(WhisperConfigsV2),
+    V2(WhisperConfigs),
     RealtimeV1(WhisperRealtimeConfigs),
 }
 
@@ -36,8 +38,6 @@ impl Configs {
     ///
     /// This method only affects V1; V2 and RealtimeV1 will just return the same object, as they already
     /// have ways to change the stored model ID for key-value lookup.
-    ///
-    /// If only V2 configurations are needed, chain with .into_v2() after calling this function.
     pub fn migrate_v1_with_hasher<H: Hasher>(self, hasher: &mut H) -> Self {
         match self {
             Configs::V1(v1) => Self::RealtimeV1(v1.into_realtime_v1_with_hasher(hasher)),
@@ -49,9 +49,9 @@ impl Configs {
     /// Converts configuration to WhisperRealtimeConfigurations (RealtimeV1).
     /// Realtime configurations are preserved from V1.
     /// If called on V2, RealtimeConfigurations::default() is supplied
-    pub fn into_realtime_v1(self) -> Self {
+    pub fn into_whisper_realtime_configs(self) -> Self {
         match self {
-            Configs::V1(v1) => Self::RealtimeV1(v1.into_realtime_v1()),
+            Configs::V1(v1) => Self::RealtimeV1(v1.into_realtime_conifgs()),
             Configs::V2(v2) => Self::RealtimeV1(v2.into_realtime_v1()),
             Configs::RealtimeV1(_) => self,
         }
@@ -60,11 +60,11 @@ impl Configs {
     /// Converts configuration to WhisperConfigsV2.
     /// Note: Migrating from V1 or RealtimeV1 to V2 is lossy; realtime configurations are not part
     /// of WhisperConfigs V2
-    pub fn into_v2(self) -> Self {
+    pub fn into_whisper_configs(self) -> Self {
         match self {
-            Configs::V1(v1) => Self::V2(v1.into_v2()),
+            Configs::V1(v1) => Self::V2(v1.into_whisper_configs()),
             Configs::V2(_) => self,
-            Configs::RealtimeV1(r_v1) => Self::V2(r_v1.into_whisper_v2_configs()),
+            Configs::RealtimeV1(r_v1) => Self::V2(r_v1.into_whisper_configs()),
         }
     }
 }
@@ -73,7 +73,8 @@ impl Configs {
 /// a transcription model, and a flag to indicate whether the GPU should be used to run the transcription.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Copy, Clone, Debug)]
-pub struct WhisperConfigsV2 {
+#[serde(default)]
+pub struct WhisperConfigs {
     // Whisper FullParams data
     /// The number of threads to use during whisper transcription. Defaults follow [whisper_rs::FullParams::set_n_threads]
     n_threads: std::ffi::c_int,
@@ -96,7 +97,7 @@ pub struct WhisperConfigsV2 {
     flash_attention: bool,
 }
 
-impl WhisperConfigsV2 {
+impl WhisperConfigs {
     pub fn new() -> Self {
         Self {
             n_threads: 1,
@@ -125,8 +126,8 @@ impl WhisperConfigsV2 {
     }
 
     /// Toggles translating from the input language to english.
-    pub fn set_translate(mut self, set_translate: bool) -> Self {
-        self.translate = set_translate;
+    pub fn with_translate(mut self, translate: bool) -> Self {
+        self.translate = translate;
         self
     }
 
@@ -138,20 +139,20 @@ impl WhisperConfigsV2 {
 
     /// Toggles whether to use the gpu to accelerate transcription.
     /// For realtime applications, this should always be set true.
-    pub fn set_gpu(mut self, use_gpu: bool) -> Self {
+    pub fn with_use_gpu(mut self, use_gpu: bool) -> Self {
         self.use_gpu = use_gpu;
         self
     }
 
     /// Toggles preventing using past context in the decoder.
     /// For realtime applications, this should always be set true.
-    pub fn set_use_no_context(mut self, use_no_context: bool) -> Self {
+    pub fn with_use_no_context(mut self, use_no_context: bool) -> Self {
         self.use_no_context = use_no_context;
         self
     }
     /// Toggles using flash attention when supported.
     /// For realtime applications, this should always be set true.
-    pub fn set_flash_attention(mut self, flash_attention: bool) -> Self {
+    pub fn with_flash_attention(mut self, flash_attention: bool) -> Self {
         self.flash_attention = flash_attention;
         self
     }
@@ -215,7 +216,7 @@ impl WhisperConfigsV2 {
     /// Note: these configurations do not cover FullParams in entirety
     /// Features are exposed on an as-needed bases.
     /// See: [whisper_rs::FullParams] for documentation.
-    pub fn to_whisper_full_params(&'_ self) -> whisper_rs::FullParams<'_, '_> {
+    pub fn as_whisper_full_params(&'_ self) -> whisper_rs::FullParams<'_, '_> {
         let mut params = match self.sampling_strategy {
             WhisperSamplingStrategy::Greedy { best_of } => {
                 whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy {
@@ -250,7 +251,7 @@ impl WhisperConfigsV2 {
     }
 
     /// Constructs a WhisperContextParameters object used to build [whisper_rs::WhisperContext]
-    pub fn to_whisper_context_params(&'_ self) -> whisper_rs::WhisperContextParameters<'_> {
+    pub fn as_whisper_context_params(&'_ self) -> whisper_rs::WhisperContextParameters<'_> {
         let mut params = whisper_rs::WhisperContextParameters::default();
         params.use_gpu(self.use_gpu);
         params.flash_attn(self.flash_attention);
@@ -258,7 +259,7 @@ impl WhisperConfigsV2 {
     }
 }
 
-impl Default for WhisperConfigsV2 {
+impl Default for WhisperConfigs {
     fn default() -> Self {
         let n_threads = std::cmp::min(
             4,
@@ -271,7 +272,7 @@ impl Default for WhisperConfigsV2 {
             .with_n_threads(n_threads)
             .with_max_past_prompt_tokens(MAX_PROMPT_TOKENS)
             .with_sampling_strategy(WhisperSamplingStrategy::Greedy { best_of: 1 })
-            .set_gpu(cfg!(feature = "_gpu"))
+            .with_use_gpu(cfg!(feature = "_gpu"))
     }
 }
 
@@ -283,14 +284,43 @@ pub enum WhisperSamplingStrategy {
     BeamSearch { beam_size: usize, patience: f32 },
 }
 
+// TODO: docstring.
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[derive(Copy, Clone, Debug, Default)]
+pub enum RealtimeBufferingStrategy {
+    #[default]
+    Continuous,
+    Buffered {
+        buffer_ms: usize,
+    },
+}
+
+impl RealtimeBufferingStrategy {
+    /// Converts the buffer size from ms to the minimum number of samples required to
+    /// run the decode pass in real-time streaming.
+    /// Since whisper requires at least 1000ms of audio to run the decode loop, the minimum
+    /// "continuous" buffering is capped at 1 second.
+    pub fn min_sample_len(&self) -> usize {
+        match self {
+            RealtimeBufferingStrategy::Continuous => WHISPER_SAMPLE_RATE as usize,
+            RealtimeBufferingStrategy::Buffered { buffer_ms } => {
+                let seconds = ((*buffer_ms as f64) / 1000.0).max(1.0);
+                (seconds * WHISPER_SAMPLE_RATE) as usize
+            }
+        }
+    }
+}
+
 /// Encapsulates relevant configurations for tweaking realtime transcription.
 /// All timeouts/audio lengths are measured in milliseconds
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Copy, Clone, Debug)]
+#[serde(default)]
 pub struct RealtimeConfigs {
     realtime_timeout: u128,
     audio_sample_len: usize,
     vad_sample_len: usize,
+    buffering_strategy: RealtimeBufferingStrategy,
 }
 
 impl RealtimeConfigs {
@@ -299,6 +329,7 @@ impl RealtimeConfigs {
             realtime_timeout: 0,
             audio_sample_len: 0,
             vad_sample_len: 0,
+            buffering_strategy: RealtimeBufferingStrategy::Continuous,
         }
     }
     /// Sets the realtime timeout. Set to 0 for "Infinite"
@@ -317,6 +348,14 @@ impl RealtimeConfigs {
         self
     }
 
+    pub fn with_buffering_strategy(
+        mut self,
+        buffering_strategy: RealtimeBufferingStrategy,
+    ) -> Self {
+        self.buffering_strategy = buffering_strategy;
+        self
+    }
+
     /// Gets the realtime timeout.
     pub fn realtime_timeout(&self) -> u128 {
         self.realtime_timeout
@@ -329,6 +368,14 @@ impl RealtimeConfigs {
     /// Gets the voice-detection sampling window size.
     pub fn vad_sample_len(&self) -> usize {
         self.vad_sample_len
+    }
+
+    pub fn buffering_strategy(&self) -> RealtimeBufferingStrategy {
+        self.buffering_strategy
+    }
+
+    pub fn min_sample_len(&self) -> usize {
+        self.buffering_strategy.min_sample_len()
     }
 }
 
@@ -345,7 +392,7 @@ impl Default for RealtimeConfigs {
 }
 
 /// A Serializable enumeration that maps to ISO-639-1 format.
-/// For use in [WhisperConfigsV2]
+/// For use in [WhisperConfigs]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(
     Copy,
@@ -471,22 +518,23 @@ pub enum Language {
 /// transcription.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Copy, Clone, Debug)]
+#[serde(default)]
 pub struct WhisperRealtimeConfigs {
-    whisper: WhisperConfigsV2,
+    whisper: WhisperConfigs,
     realtime: RealtimeConfigs,
 }
 
 impl WhisperRealtimeConfigs {
     pub fn new() -> Self {
         Self {
-            whisper: WhisperConfigsV2::new(),
+            whisper: WhisperConfigs::new(),
             realtime: RealtimeConfigs::new(),
         }
     }
 
     // Convenience builder delegates
     /// Sets the whisper configurations.
-    pub fn with_whisper_configs(mut self, w_configs: WhisperConfigsV2) -> Self {
+    pub fn with_whisper_configs(mut self, w_configs: WhisperConfigs) -> Self {
         self.whisper = w_configs;
         self
     }
@@ -509,8 +557,8 @@ impl WhisperRealtimeConfigs {
         self
     }
     /// Toggles translating to the specified output language
-    pub fn set_translate(mut self, set_translate: bool) -> Self {
-        self.whisper.translate = set_translate;
+    pub fn with_translate(mut self, translate: bool) -> Self {
+        self.whisper.translate = translate;
         self
     }
 
@@ -522,20 +570,20 @@ impl WhisperRealtimeConfigs {
 
     /// Toggles whether to use the gpu to accelerate transcription.
     /// For realtime applications, this should always be set true.
-    pub fn set_gpu(mut self, use_gpu: bool) -> Self {
+    pub fn with_use_gpu(mut self, use_gpu: bool) -> Self {
         self.whisper.use_gpu = use_gpu;
         self
     }
     /// Toggles preventing using past context in the decoder.
-    /// For realtime applications, this should always be set true.
-    pub fn set_use_no_context(mut self, use_no_context: bool) -> Self {
+    /// NOTE: this is ignored in realtime-streaming.
+    pub fn with_use_no_context(mut self, use_no_context: bool) -> Self {
         self.whisper.use_no_context = use_no_context;
         self
     }
 
     /// Toggles using flash attention when supported.
     /// For realtime applications, this should always be set true.
-    pub fn set_flash_attention(mut self, flash_attention: bool) -> Self {
+    pub fn with_use_flash_attention(mut self, flash_attention: bool) -> Self {
         self.whisper.flash_attention = flash_attention;
         self
     }
@@ -566,6 +614,14 @@ impl WhisperRealtimeConfigs {
     /// Sets the size of the voice-detection sampling window (in ms). Defaults to 300ms.
     pub fn with_vad_sample_len(mut self, len_ms: usize) -> Self {
         self.realtime.vad_sample_len = len_ms;
+        self
+    }
+
+    pub fn with_buffering_strategy(
+        mut self,
+        buffering_strategy: RealtimeBufferingStrategy,
+    ) -> Self {
+        self.realtime.buffering_strategy = buffering_strategy;
         self
     }
 
@@ -624,18 +680,26 @@ impl WhisperRealtimeConfigs {
         self.realtime.vad_sample_len
     }
 
-    /// Gets the inner WhisperConfigsV2
-    pub fn to_whisper_v2_configs(&self) -> &WhisperConfigsV2 {
+    /// Gets the real-time buffering strategy
+    pub fn realtime_buffering_strategy(&self) -> RealtimeBufferingStrategy {
+        self.realtime.buffering_strategy
+    }
+    pub fn min_sample_len(&self) -> usize {
+        self.realtime.min_sample_len()
+    }
+
+    /// Gets the inner Whisper_configs
+    pub fn as_whisper_configs(&self) -> &WhisperConfigs {
         &self.whisper
     }
 
     /// Gets the inner RealtimeConfigs
-    pub fn to_realtime_configs(&self) -> &RealtimeConfigs {
+    pub fn as_realtime_configs(&self) -> &RealtimeConfigs {
         &self.realtime
     }
 
     /// Consumes this object and converts to WhisperConfigsV2
-    pub fn into_whisper_v2_configs(self) -> WhisperConfigsV2 {
+    pub fn into_whisper_configs(self) -> WhisperConfigs {
         self.whisper
     }
 
@@ -648,8 +712,8 @@ impl WhisperRealtimeConfigs {
     /// Note: these configurations do not cover FullParams in entirety
     /// Features are exposed on an as-needed bases.
     /// See: [whisper_rs::FullParams] for documentation.
-    pub fn to_whisper_full_params(&'_ self) -> whisper_rs::FullParams<'_, '_> {
-        let mut params = self.whisper.to_whisper_full_params();
+    pub fn as_whisper_full_params(&'_ self) -> whisper_rs::FullParams<'_, '_> {
+        let mut params = self.whisper.as_whisper_full_params();
         // Forcing single segment transcription helps alleviate transcription artifacts when
         // running realtime to reduce the amount of false negatives in the
         // word-boundary resolution algorithm
@@ -657,8 +721,8 @@ impl WhisperRealtimeConfigs {
         params
     }
     /// Constructs a WhisperContextParameters object used to build [whisper_rs::WhisperContext]
-    pub fn to_whisper_context_params(&'_ self) -> whisper_rs::WhisperContextParameters<'_> {
-        self.whisper.to_whisper_context_params()
+    pub fn as_whisper_context_params(&'_ self) -> whisper_rs::WhisperContextParameters<'_> {
+        self.whisper.as_whisper_context_params()
     }
 }
 
@@ -666,13 +730,13 @@ impl Default for WhisperRealtimeConfigs {
     fn default() -> Self {
         Self::new()
             .with_whisper_configs(
-                WhisperConfigsV2::default()
+                WhisperConfigs::default()
                     // Whisper has trouble if context is maintained for subsequent transcription when
                     // streaming in realtime (usually resulting in duplicated output hallucinations)
                     // so context remembering is removed by default
-                    .set_use_no_context(true)
-                    .set_gpu(true)
-                    .set_flash_attention(true),
+                    .with_use_no_context(true)
+                    .with_use_gpu(true)
+                    .with_flash_attention(true),
             )
             .with_realtime_configs(RealtimeConfigs::default())
     }
@@ -683,6 +747,7 @@ impl Default for WhisperRealtimeConfigs {
 /// Note: voice_probability_threshold has been moved out of configs and into the VAD API.
 /// If this value needs to be preserved, access it publicly, cache it, and store/set appropriately
 /// before consuming into WhisperConfigsV2 or WhisperRealtimeConfigs.
+/// #[deprecated(since = "0.2.0", note = "Use WhisperConfigs for whisper-only configs and WhisperRealtimeConfigs for whisper + real-time configurations."]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Clone, Debug)]
 pub struct WhisperConfigsV1 {
@@ -719,26 +784,26 @@ impl WhisperConfigsV1 {
     /// Since the new model implementation assumes some sort of id-value mapping infrastructure
     /// will be used, a ModelId hash is computed to store in the configs for quick data retrieval.
     /// See: [crate::whisper::model::ModelBank] and [crate::whisper::model::DefaultModelBank]
-    pub fn into_v2(self) -> WhisperConfigsV2 {
+    pub fn into_whisper_configs(self) -> WhisperConfigs {
         let model = self.model.to_model();
         let mut hasher = DefaultHasher::new();
-        self.into_v2_with_model(model, &mut hasher)
+        self.into_whisper_configs_with_model(model, &mut hasher)
     }
 
     /// Consumes and converts into WhisperConfigsV2 with the given hasher.
     /// Since the new model implementation assumes some sort of id-value mapping infrastructure
     /// will be used, a ModelId hash is computed to store in the configs for quick data retrieval.
     /// See: [crate::whisper::model::ModelBank] and [crate::whisper::model::DefaultModelBank]
-    pub fn into_v2_with_hasher(self, hasher: &mut impl Hasher) -> WhisperConfigsV2 {
+    pub fn into_whisper_configs_with_hasher(self, hasher: &mut impl Hasher) -> WhisperConfigs {
         let model = self.model.to_model();
-        self.into_v2_with_model(model, hasher)
+        self.into_whisper_configs_with_model(model, hasher)
     }
 
     /// Consumes and converts into WhisperRealtimeConfigs, uses a default hasher to compute the
     /// ModelId.
-    pub fn into_realtime_v1(self) -> WhisperRealtimeConfigs {
+    pub fn into_realtime_conifgs(self) -> WhisperRealtimeConfigs {
         let realtime_configs = self.to_realtime_configs();
-        let whisper_configs = self.into_v2();
+        let whisper_configs = self.into_whisper_configs();
         WhisperRealtimeConfigs::new()
             .with_realtime_configs(realtime_configs)
             .with_whisper_configs(whisper_configs)
@@ -748,24 +813,28 @@ impl WhisperConfigsV1 {
     /// ModelId
     pub fn into_realtime_v1_with_hasher<H: Hasher>(self, hasher: &mut H) -> WhisperRealtimeConfigs {
         let realtime_configs = self.to_realtime_configs();
-        let whisper_configs = self.into_v2_with_hasher(hasher);
+        let whisper_configs = self.into_whisper_configs_with_hasher(hasher);
         WhisperRealtimeConfigs::new()
             .with_realtime_configs(realtime_configs)
             .with_whisper_configs(whisper_configs)
     }
 
-    fn into_v2_with_model<H: Hasher>(self, model: Model, hasher: &mut H) -> WhisperConfigsV2 {
+    fn into_whisper_configs_with_model<H: Hasher>(
+        self,
+        model: Model,
+        hasher: &mut H,
+    ) -> WhisperConfigs {
         let language = self
             .language
             .as_ref()
             .map(|lang| Language::from_str(lang).unwrap());
         model.file_name().hash(hasher);
         let model_id = hasher.finish();
-        WhisperConfigsV2::default()
+        WhisperConfigs::default()
             .with_n_threads(self.n_threads as usize)
-            .set_translate(self.set_translate)
+            .with_translate(self.set_translate)
             .with_language(language)
-            .set_gpu(self.use_gpu)
+            .with_use_gpu(self.use_gpu)
             .with_model_id(Some(model_id))
     }
 
@@ -778,10 +847,3 @@ impl WhisperConfigsV1 {
             .with_realtime_timeout(self.realtime_timeout)
     }
 }
-
-pub const MAX_PROMPT_TOKENS: usize = 16384;
-// Recommended 1Hr.
-pub const REALTIME_AUDIO_TIMEOUT: u128 = std::time::Duration::new(3600, 0).as_millis();
-pub const VAD_SAMPLE_MS: usize = 300;
-// in ms
-pub const AUDIO_SAMPLE_MS: usize = 10000;

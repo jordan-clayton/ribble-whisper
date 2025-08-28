@@ -183,7 +183,7 @@ mod ringbuffer_tests {
 
         // Now, clear 4 seconds of audio; expect the buffer to be empty.
         // The old implementation kept roughly N_SAMPLES, but this is not necessary with the new implementation.
-        ring_buffer.clear_n_samples(4000);
+        ring_buffer.clear_n_ms_from_back(4000);
         assert_eq!(ring_buffer.get_audio_length(), 0);
         // Ensure the head is unchanged (only the audio length should be reduced to nearly 0).
         assert_eq!(ring_buffer.get_head_position(), head_len);
@@ -213,7 +213,7 @@ mod ringbuffer_tests {
         assert_eq!(ring_buffer.get_audio_length(), expected_audio_len);
 
         // Now, clear 5 seconds of audio; expect the buffer to be of length 5s + constants::N_SAMPLES_KEEP
-        ring_buffer.clear_n_samples(5000);
+        ring_buffer.clear_n_ms_from_back(5000);
         let anticipated_len = (5f64 * transcriber::WHISPER_SAMPLE_RATE) as usize;
 
         assert_eq!(anticipated_len, ring_buffer.get_audio_length());

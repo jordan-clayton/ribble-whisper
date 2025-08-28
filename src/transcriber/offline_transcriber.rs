@@ -1,18 +1,18 @@
 use parking_lot::Mutex;
-use std::ffi::{CStr, c_int, c_void};
-use std::sync::Arc;
+use std::ffi::{c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use whisper_rs::{WhisperNewSegmentCallback, WhisperProgressCallback};
 
 use crate::audio::{AudioChannelConfiguration, WhisperAudioSample};
 use crate::transcriber::vad::VAD;
 use crate::transcriber::{
-    OfflineWhisperNewSegmentCallback, OfflineWhisperProgressCallback, WhisperCallbacks,
-    build_whisper_context,
+    build_whisper_context, OfflineWhisperNewSegmentCallback, OfflineWhisperProgressCallback,
+    WhisperCallbacks,
 };
 use crate::utils::errors::RibbleWhisperError;
-use crate::whisper::configs::WhisperConfigsV2;
+use crate::whisper::configs::WhisperConfigs;
 use crate::whisper::model::ModelRetriever;
 
 /// Builder for [OfflineTranscriber]
@@ -22,7 +22,7 @@ where
     V: VAD<f32>,
     M: ModelRetriever,
 {
-    configs: Option<Arc<WhisperConfigsV2>>,
+    configs: Option<Arc<WhisperConfigs>>,
     audio: Option<WhisperAudioSample>,
     channels: Option<AudioChannelConfiguration>,
     model_retriever: Option<Arc<M>>,
@@ -45,7 +45,7 @@ where
         }
     }
     /// Sets the whisper configurations
-    pub fn with_configs(mut self, configs: WhisperConfigsV2) -> Self {
+    pub fn with_configs(mut self, configs: WhisperConfigs) -> Self {
         self.configs = Some(Arc::new(configs));
         self
     }
@@ -185,7 +185,7 @@ where
     M: ModelRetriever,
 {
     /// Whisper configurations
-    configs: Arc<WhisperConfigsV2>,
+    configs: Arc<WhisperConfigs>,
     /// The audio to transcribe.
     audio: WhisperAudioSample,
     /// Mono or Stereo. Stereo will be converted to mono before transcription
@@ -205,7 +205,7 @@ where
         full_params: whisper_rs::FullParams,
         run_transcription: Arc<AtomicBool>,
     ) -> Result<String, RibbleWhisperError> {
-        let whisper_context_params = self.configs.to_whisper_context_params();
+        let whisper_context_params = self.configs.as_whisper_context_params();
         // Since it's not possible to build an OfflineTranscriber without the ID set, this can be
         // safely unwrapped.
         let model_id = self.configs.model_id().unwrap();
@@ -278,7 +278,7 @@ where
         run_transcription: Arc<AtomicBool>,
     ) -> Result<String, RibbleWhisperError> {
         let confs = Arc::clone(&self.configs);
-        let mut full_params = confs.to_whisper_full_params();
+        let mut full_params = confs.as_whisper_full_params();
         // Abort callback
         let r_transcription = Arc::clone(&run_transcription);
 
@@ -322,7 +322,7 @@ where
         } = callbacks;
 
         let confs = Arc::clone(&self.configs);
-        let mut full_params = confs.to_whisper_full_params();
+        let mut full_params = confs.as_whisper_full_params();
 
         // Named stack binding for the progress callback
         let mut p_callback;

@@ -98,33 +98,32 @@ impl RibbleWhisperSegment {
     }
 }
 
-impl<'a> From<WhisperSegment<'a>> for RibbleWhisperSegment {
-    fn from(value: WhisperSegment) -> Self {
-        Self {
-            text: Arc::from(
-                value
-                    .to_str_lossy()
-                    .expect("This only fails on null pointer. This should not be null pointer")
-                    .to_string(),
-            ),
-            start_time: value.start_timestamp(),
-            end_time: value.end_timestamp(),
-        }
+impl<'a> TryFrom<WhisperSegment<'a>> for RibbleWhisperSegment {
+    type Error = RibbleWhisperError;
+    fn try_from(value: WhisperSegment) -> Result<Self, Self::Error> {
+        let text = value.to_str_lossy()?;
+        let start_time = value.start_timestamp();
+        let end_time = value.end_timestamp();
+        Ok(Self {
+            text: text.into(),
+            start_time,
+            end_time,
+        })
     }
 }
 
-impl<'a> From<&WhisperSegment<'a>> for RibbleWhisperSegment {
-    fn from(value: &WhisperSegment<'a>) -> Self {
-        Self {
-            text: Arc::from(
-                value
-                    .to_str_lossy()
-                    .expect("This only fails on null pointer. This should not be null pointer")
-                    .to_string(),
-            ),
-            start_time: value.start_timestamp(),
-            end_time: value.end_timestamp(),
-        }
+impl<'a> TryFrom<&WhisperSegment<'a>> for RibbleWhisperSegment {
+    type Error = RibbleWhisperError;
+
+    fn try_from(value: &WhisperSegment<'a>) -> Result<Self, Self::Error> {
+        let text = value.to_str_lossy()?;
+        let start_time = value.start_timestamp();
+        let end_time = value.end_timestamp();
+        Ok(Self {
+            text: text.into(),
+            start_time,
+            end_time,
+        })
     }
 }
 
@@ -208,6 +207,8 @@ pub enum WhisperControlPhrase {
     /// The transcription has fully ended and the final string will be returned
     #[strum(serialize = "[END TRANSCRIPTION]")]
     EndTranscription,
+    #[strum(serialize = "[CLEANING UP]")]
+    SlowStop,
     /// For passing debugging messages across the channel
     #[strum(serialize = "Debug: {0}")]
     Debug(String),

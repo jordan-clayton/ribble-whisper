@@ -14,7 +14,7 @@ use ribble_whisper::transcriber::vad::{
     Silero, SileroBuilder, SileroSampleRate,
     WebRtcBuilder, DEFAULT_VOICE_PROPORTION_THRESHOLD, REAL_TIME_VOICE_PROBABILITY_THRESHOLD, VAD,
 };
-use ribble_whisper::transcriber::{Transcriber, WhisperOutput};
+use ribble_whisper::transcriber::WhisperOutput;
 use ribble_whisper::utils;
 use ribble_whisper::utils::errors::RibbleWhisperError;
 use ribble_whisper::utils::Receiver;
@@ -174,7 +174,7 @@ pub fn realtime_bencher<V: VAD<f32> + Send + Sync>(
         });
         let _t_thread = s.spawn(move || {
             transcriber
-                .process_audio(t_thread_run_transcription)
+                .run_stream(t_thread_run_transcription, Default::default())
                 .expect("Transcription should not not fail under these conditions.");
         });
         // Simple thread to just drain the audio - this will sleep until it receives output from
@@ -252,7 +252,7 @@ fn prep_configs() -> (WhisperRealtimeConfigs, DefaultModelBank) {
             .with_model_id(Some(model_id))
             // Also, optionally set flash attention.
             // Generally keep this on for a performance gain.
-            .set_flash_attention(true),
+            .with_use_flash_attention(true),
         model_bank,
     )
 }

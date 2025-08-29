@@ -9,7 +9,7 @@ use whisper_rs;
 
 pub const MAX_PROMPT_TOKENS: usize = 16384;
 // Recommended 1Hr.
-pub const REALTIME_AUDIO_TIMEOUT: u128 = std::time::Duration::new(3600, 0).as_millis();
+pub const REALTIME_AUDIO_TIMEOUT: usize = std::time::Duration::new(3600, 0).as_millis() as usize;
 pub const VAD_SAMPLE_MS: usize = 300;
 // in ms
 pub const AUDIO_SAMPLE_MS: usize = 10000;
@@ -72,8 +72,8 @@ impl Configs {
 /// A configurations type that holds a subset of useful configurations for whisper-rs::FullParams and whisper-rs::WhisperContextParams,
 /// a transcription model, and a flag to indicate whether the GPU should be used to run the transcription.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 #[derive(Copy, Clone, Debug)]
-#[serde(default)]
 pub struct WhisperConfigs {
     // Whisper FullParams data
     /// The number of threads to use during whisper transcription. Defaults follow [whisper_rs::FullParams::set_n_threads]
@@ -318,10 +318,10 @@ impl RealtimeBufferingStrategy {
 /// Encapsulates relevant configurations for tweaking realtime transcription.
 /// All timeouts/audio lengths are measured in milliseconds
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 #[derive(Copy, Clone, Debug)]
-#[serde(default)]
 pub struct RealtimeConfigs {
-    realtime_timeout: u128,
+    realtime_timeout: usize,
     audio_sample_len: usize,
     vad_sample_len: usize,
     buffering_strategy: RealtimeBufferingStrategy,
@@ -337,7 +337,7 @@ impl RealtimeConfigs {
         }
     }
     /// Sets the realtime timeout. Set to 0 for "Infinite"
-    pub fn with_realtime_timeout(mut self, realtime_timeout: u128) -> Self {
+    pub fn with_realtime_timeout(mut self, realtime_timeout: usize) -> Self {
         self.realtime_timeout = realtime_timeout;
         self
     }
@@ -361,7 +361,7 @@ impl RealtimeConfigs {
     }
 
     /// Gets the realtime timeout.
-    pub fn realtime_timeout(&self) -> u128 {
+    pub fn realtime_timeout(&self) -> usize {
         self.realtime_timeout
     }
 
@@ -521,8 +521,8 @@ pub enum Language {
 /// A composite configurations type holding all relevant configurations for running realtime
 /// transcription.
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 #[derive(Copy, Clone, Debug)]
-#[serde(default)]
 pub struct WhisperRealtimeConfigs {
     whisper: WhisperConfigs,
     realtime: RealtimeConfigs,
@@ -605,7 +605,7 @@ impl WhisperRealtimeConfigs {
     }
 
     /// Sets the model.
-    pub fn with_realtime_timeout(mut self, realtime_timeout: u128) -> Self {
+    pub fn with_realtime_timeout(mut self, realtime_timeout: usize) -> Self {
         self.realtime.realtime_timeout = realtime_timeout;
         self
     }
@@ -670,7 +670,7 @@ impl WhisperRealtimeConfigs {
 
     // Realtime Accessors
     /// Gets the realtime timeout (in ms).
-    pub fn realtime_timeout(&self) -> u128 {
+    pub fn realtime_timeout(&self) -> usize {
         self.realtime.realtime_timeout
     }
 
@@ -753,7 +753,8 @@ impl Default for WhisperRealtimeConfigs {
 /// before consuming into WhisperConfigsV2 or WhisperRealtimeConfigs.
 /// #[deprecated(since = "0.2.0", note = "Use WhisperConfigs for whisper-only configs and WhisperRealtimeConfigs for whisper + real-time configurations."]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", serde(default))]
+#[derive(Default, Clone, Debug)]
 pub struct WhisperConfigsV1 {
     pub n_threads: std::ffi::c_int,
     pub set_translate: bool,
@@ -764,7 +765,7 @@ pub struct WhisperConfigsV1 {
     pub model: DefaultModelType,
 
     // in milliseconds.
-    pub realtime_timeout: u128,
+    pub realtime_timeout: usize,
     pub audio_sample_ms: usize,
     pub vad_sample_ms: usize,
     pub phrase_timeout: usize,

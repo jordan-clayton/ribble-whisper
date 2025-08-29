@@ -1,6 +1,6 @@
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use strsim::jaro_winkler;
@@ -8,11 +8,11 @@ use strsim::jaro_winkler;
 use crate::audio::audio_ring_buffer::AudioRingBuffer;
 use crate::transcriber::vad::VAD;
 use crate::transcriber::{
-    build_whisper_context, RibbleWhisperSegment, TranscriptionSnapshot, WhisperControlPhrase,
-    WhisperOutput, WHISPER_SAMPLE_RATE,
+    RibbleWhisperSegment, TranscriptionSnapshot, WHISPER_SAMPLE_RATE, WhisperControlPhrase,
+    WhisperOutput, build_whisper_context,
 };
-use crate::utils::errors::RibbleWhisperError;
 use crate::utils::Sender;
+use crate::utils::errors::RibbleWhisperError;
 use crate::whisper::configs::WhisperRealtimeConfigs;
 use crate::whisper::model::ModelRetriever;
 use std::error::Error;
@@ -351,6 +351,13 @@ where
         let mut t_last = Instant::now();
         // For timing the transcription (and timeout)
         let mut total_time = 0u128;
+        let timeout_limit_usize = self.configs.realtime_timeout();
+
+        let timeout_limit = if timeout_limit_usize >= usize::MAX {
+            usize::MAX as u128
+        } else {
+            timeout_limit_usize.try_into().unwrap()
+        };
 
         // To collect audio from the ring buffer.
         let mut audio_samples: Vec<f32> = vec![0f32; N_SAMPLES_30S];
@@ -634,12 +641,12 @@ where
             }
 
             // If the timeout is set to 0, this loop runs infinitely.
-            if self.configs.realtime_timeout() == 0 {
+            if timeout_limit == 0 {
                 continue;
             }
 
             // Otherwise check for timeout.
-            if total_time > self.configs.realtime_timeout() {
+            if total_time > timeout_limit {
                 self.send_control_phrase(WhisperControlPhrase::TranscriptionTimeout);
 
                 run_transcription.store(false, Ordering::Release);

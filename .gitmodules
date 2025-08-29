@@ -1,0 +1,3 @@
+[submodule "external/voice_activity_detector"]
+	path = external/voice_activity_detector
+	url = https://github.com/jordan-clayton/voice_activity_detector.git

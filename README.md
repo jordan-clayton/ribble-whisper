@@ -1,6 +1,6 @@
 # Ribble-Whisper
 
-A high-level adapter for real-time (streaming) and offline transcription using
+A high-level toolkit for real-time (streaming) and offline transcription using
 OpenAI's Whisper. This crate wraps core [whisper-rs](https://github.com/tazz4843/whisper-rs) functionality,
 voice activity detection (VAD), file loading, and optional features like resampling, making Whisper easier to integrate
 into your own projects.

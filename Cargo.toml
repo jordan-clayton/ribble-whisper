@@ -5,7 +5,7 @@ edition = "2024"
 description = "High-level wrapper around whisper-rs and related transcription features with support for realtime transcription."
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/jordan-clayton/whisper-realtime"
+repository = "https://github.com/jordan-clayton/ribble-whisper"
 keywords = ["whisper", "realtime", "speech-to-text", "transcription", "audio"]
 categories = ["accessibility", "multimedia::audio"]
 
@@ -13,7 +13,7 @@ categories = ["accessibility", "multimedia::audio"]
 doctest = false
 
 [package.metadata]
-license-notes = "Includes third-party code under MPL-2.0 and BSD-3-Clause. See LICENSE-MPL-2.0 and LICENSE-BSD-3."
+license-notes = "Includes third-party code under various licenses, see THIRD_PARTY_LICENSES.md."
 
 [dependencies]
 serde = { version = "1.0.219", features = ["derive"], optional = true }

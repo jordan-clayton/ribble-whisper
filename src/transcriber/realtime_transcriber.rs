@@ -402,7 +402,10 @@ where
             // This gives the audio some time to collect in-between this loop and when the user is
             // alerted to start speaking.
             if millis < self.configs.vad_sample_len() as u128 {
-                sleep(Duration::from_millis(PAUSE_DURATION));
+                // Get half the time difference difference in ms.
+                let diff = (((self.configs.vad_sample_len() as u128 - millis) >> 1) as u64).max(PAUSE_DURATION);
+                // Sleep for the halved time.
+                sleep(Duration::from_millis(diff));
                 continue;
             }
 
@@ -436,15 +439,20 @@ where
                     }
 
                     let timeout_start_instant = vad_timeout_start_instant.unwrap();
+                    
+                    let p_diff = vad_t_now.duration_since(timeout_start_instant).as_millis();
 
-                    if vad_t_now.duration_since(timeout_start_instant).as_millis() < VAD_TIMEOUT_MS
+                    if p_diff < VAD_TIMEOUT_MS
                     {
                         #[cfg(debug_assertions)]
                         self.send_control_phrase(WhisperControlPhrase::Debug(
                             "PAUSE TIMEOUT TICKING".to_string(),
                         ));
+                       
+                        let diff = ((VAD_TIMEOUT_MS - p_diff) as u64 >> 1).max(PAUSE_DURATION);
+
                         // Sleep for a small amount of time to cut down on spinning
-                        sleep(Duration::from_millis(PAUSE_DURATION));
+                        sleep(Duration::from_millis(diff));
                         // Run the VAD check again to continue testing for silence.
                         continue;
                     }
@@ -491,11 +499,7 @@ where
                 false
             };
 
-            if pause_detected {
-                // Sleep for a bit to let the buffer fill up again.
-                // This might add too much latency -> if so, switch to yielding the core.
-                sleep(Duration::from_millis(PAUSE_DURATION));
-            } else {
+            if !pause_detected{
                 vad_timeout_start_instant = None;
             }
 
@@ -518,7 +522,12 @@ where
                 // Skip over the next VAD
                 // This will also skip over the clearing.
                 skip_vad_run_inference = true;
-                sleep(Duration::from_millis(PAUSE_DURATION));
+                let a_diff = min_sample_len - audio_samples.len();
+                let f_a_diff = (a_diff as f64) * 1000f64 / WHISPER_SAMPLE_RATE;
+                // This -should- be halving the difference.
+                let diff = ((f_a_diff as u64) >> 1).min(PAUSE_DURATION);
+
+                sleep(Duration::from_millis(diff));
                 continue;
             }
 

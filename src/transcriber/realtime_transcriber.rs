@@ -17,6 +17,10 @@ use crate::whisper::configs::WhisperRealtimeConfigs;
 use crate::whisper::model::ModelRetriever;
 use std::error::Error;
 
+// BIG TODO: figure out a way to chop down on the busy-waiting in a way that doesn't sacrifice
+// latency.
+// ATM, I've yet to solve this particularly well.
+
 // Conservatively at 90% match
 // It does not do well with strings that don't share a prefix, so "has/as" will end up being an
 // artifact. Until I come up with some bulletproof, clever-er solution that runs with low latency,
@@ -353,7 +357,7 @@ where
         let mut total_time = 0u128;
         let timeout_limit_usize = self.configs.realtime_timeout();
 
-        let timeout_limit = if timeout_limit_usize >= usize::MAX {
+        let timeout_limit = if timeout_limit_usize == usize::MAX {
             usize::MAX as u128
         } else {
             timeout_limit_usize.try_into().unwrap()
@@ -439,7 +443,9 @@ where
                         self.send_control_phrase(WhisperControlPhrase::Debug(
                             "PAUSE TIMEOUT TICKING".to_string(),
                         ));
-                        // Run the VAD check again to test for silence.
+                        // Sleep for a small amount of time to cut down on spinning
+                        sleep(Duration::from_millis(PAUSE_DURATION));
+                        // Run the VAD check again to continue testing for silence.
                         continue;
                     }
 
@@ -469,6 +475,8 @@ where
                         run_segment_merge = false;
                         // RESET the VAD timeout so it doesn't get stuck in a clearing loop.
                         vad_timeout_start_instant = None;
+                        // Sleep for a small amount of time to cut down on spinning.
+                        sleep(Duration::from_millis(PAUSE_DURATION));
                         continue;
                     }
                     previous_pause_clear_buffer = true;
@@ -483,7 +491,11 @@ where
                 false
             };
 
-            if !pause_detected {
+            if pause_detected {
+                // Sleep for a bit to let the buffer fill up again.
+                // This might add too much latency -> if so, switch to yielding the core.
+                sleep(Duration::from_millis(PAUSE_DURATION));
+            } else {
                 vad_timeout_start_instant = None;
             }
 
@@ -506,6 +518,7 @@ where
                 // Skip over the next VAD
                 // This will also skip over the clearing.
                 skip_vad_run_inference = true;
+                sleep(Duration::from_millis(PAUSE_DURATION));
                 continue;
             }
 

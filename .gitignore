@@ -11,3 +11,5 @@
 /about.toml
 /THIRD_PARTY_LICENSES.html
 /generate_licenses.sh
+/data/*
+/src/data
